@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from flask_backend.app.settings import repo_root
+from flask_backend.app.motion_enhanced_features import extract_enhanced_features
 
 _WINDOW = 300
-
-
-def _ensure_scripts() -> None:
-    s = repo_root() / "scripts"
-    p = str(s)
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 
 def _resample_rows(data: np.ndarray, target_len: int) -> np.ndarray:
@@ -73,9 +64,6 @@ def samples_to_feature_vector(samples: list[dict[str, Any]]) -> tuple[np.ndarray
     acc_300 = _resample_rows(acc, _WINDOW)
     gyro_300 = _resample_rows(gyro, _WINDOW)
     ori_300 = _resample_rows(ori, _WINDOW)
-
-    _ensure_scripts()
-    from baseline_fall.enhanced_features import extract_enhanced_features
 
     xb = acc_300[np.newaxis, ...]
     yb = gyro_300[np.newaxis, ...]
