@@ -19,6 +19,8 @@ def test_health(client: TestClient) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
+    assert "credential_rules_version" in body
+    assert body["credential_rules_version"]
     if not body.get("inference_ready"):
         pytest.skip(body.get("load_error") or "inference artifacts not loaded")
 

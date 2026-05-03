@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
-import string
 import uuid
 
 import numpy as np
@@ -18,6 +16,12 @@ from pydantic import BaseModel, Field
 
 from flask_backend.app.auth_jwt import create_token, decode_token, hash_password, verify_password
 from flask_backend.app.database import get_connection, init_schema, iso_now, seed_default_admin
+from flask_backend.app.elder_credential_allocator import (
+    ElderUsernameAllocationFailed,
+    elder_name_slug,
+    pick_unique_elder_username_for_patient,
+    temporary_password_for_patient,
+)
 from flask_backend.app.detector_state import build_detection_payload
 from flask_backend.app.ml_bridge import acc_gyro_ori_to_window_lists, samples_to_feature_vector
 from flask_backend.app.schemas_fall_feedback import FallFeedbackAck, FallFeedbackEvent
@@ -37,29 +41,6 @@ router = APIRouter()
 
 # Set by ``main.py`` lifespan — avoids circular imports.
 _RUNTIME: dict[str, Any] = {}
-
-
-def _simple_letters_digits(*, letters: int = 5, digits: int = 5) -> str:
-    """Human-friendly token: lowercase letters then digits (e.g. ``abcde12345``)."""
-    alpha = "".join(secrets.choice(string.ascii_lowercase) for _ in range(letters))
-    nums = "".join(secrets.choice(string.digits) for _ in range(digits))
-    return f"{alpha}{nums}"
-
-
-def _pick_unique_elder_username(conn) -> str:
-    """``_simple_letters_digits()`` that is not already taken as ``users.username``."""
-    c = conn.cursor()
-    for _ in range(64):
-        candidate = _simple_letters_digits()
-        c.execute("SELECT 1 FROM users WHERE username = ?", (candidate,))
-        if c.fetchone() is None:
-            return candidate
-    raise HTTPException(status_code=500, detail="Could not allocate a unique elder username; retry.")
-
-
-def _simple_elder_password() -> str:
-    """Same shape as username for easy handoff to the patient."""
-    return _simple_letters_digits()
 
 
 def set_inference_runtime(state: dict[str, Any]) -> None:
@@ -534,9 +515,14 @@ def patient_credentials(body: PatientCredBody):
         tick_fall_escalations(conn)
         pid = uuid.uuid4().hex
         eid = uuid.uuid4().hex
-        username = _pick_unique_elder_username(conn)
-        temp_pass = _simple_elder_password()
         c = conn.cursor()
+        display = body.full_name.strip()
+        name_slug = elder_name_slug(display)
+        try:
+            username = pick_unique_elder_username_for_patient(c, display)
+        except ElderUsernameAllocationFailed as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        temp_pass = temporary_password_for_patient(name_slug)
         c.execute(
             """INSERT INTO patients (id, full_name, age, caregiver_id, home_address, emergency_contact, notes)
                VALUES (?,?,?,?,?,?,?)""",
