@@ -1025,8 +1025,21 @@ def manual_alert(
 
 
 @router.get("/api/v1/alerts")
-def list_alerts(status: str | None = None, patient_id: str | None = None):
+def list_alerts(
+    status: str | None = None,
+    patient_id: str | None = None,
+    authorization: Annotated[str | None, Header()] = None,
+):
     init_schema()
+    claims = _claims_opt(authorization)
+    caregiver_filter_ids: list[str] | None = None
+    if claims and claims.get("role") == "caregiver":
+        with get_connection() as conn:
+            c = conn.cursor()
+            caregiver_filter_ids = _collect_patient_ids_for_caregiver(c, str(claims["sub"]))
+        if not caregiver_filter_ids:
+            return []
+
     with get_connection() as conn:
         tick_fall_escalations(conn)
         c = conn.cursor()
@@ -1038,6 +1051,10 @@ def list_alerts(status: str | None = None, patient_id: str | None = None):
         if patient_id:
             q += " AND patient_id = ?"
             args.append(patient_id)
+        if caregiver_filter_ids is not None:
+            placeholders = ",".join("?" for _ in caregiver_filter_ids)
+            q += f" AND patient_id IN ({placeholders})"
+            args.extend(caregiver_filter_ids)
         q += " ORDER BY created_at DESC LIMIT 200"
         c.execute(q, args)
         rows = c.fetchall()
@@ -1115,17 +1132,39 @@ def resolve_alert(alert_id: str, body: AckBody):
 
 
 @router.get("/api/v1/summary")
-def summary():
+def summary(authorization: Annotated[str | None, Header()] = None):
     init_schema()
+    claims = _claims_opt(authorization)
     with get_connection() as conn:
         tick_fall_escalations(conn)
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM patients")
-        tp = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM sessions WHERE status = 'active'")
-        ac = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM alerts WHERE status = 'open'")
-        oa = c.fetchone()[0]
+        if claims and claims.get("role") == "caregiver":
+            ids = _collect_patient_ids_for_caregiver(c, str(claims["sub"]))
+            if not ids:
+                tp = 0
+                ac = 0
+                oa = 0
+            else:
+                placeholders = ",".join("?" for _ in ids)
+                c.execute(f"SELECT COUNT(*) FROM patients WHERE id IN ({placeholders})", ids)
+                tp = c.fetchone()[0]
+                c.execute(
+                    f"SELECT COUNT(*) FROM sessions WHERE status = 'active' AND patient_id IN ({placeholders})",
+                    ids,
+                )
+                ac = c.fetchone()[0]
+                c.execute(
+                    f"SELECT COUNT(*) FROM alerts WHERE status = 'open' AND patient_id IN ({placeholders})",
+                    ids,
+                )
+                oa = c.fetchone()[0]
+        else:
+            c.execute("SELECT COUNT(*) FROM patients")
+            tp = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM sessions WHERE status = 'active'")
+            ac = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM alerts WHERE status = 'open'")
+            oa = c.fetchone()[0]
     return {
         "total_patients": tp,
         "active_sessions": ac,
@@ -1204,12 +1243,20 @@ def post_my_location(
 
 
 @router.get("/api/v1/monitor/patients/live")
-def live_patients():
+def live_patients(authorization: Annotated[str | None, Header()] = None):
     init_schema()
+    claims = _claims_opt(authorization)
     with get_connection() as conn:
         tick_fall_escalations(conn)
         c = conn.cursor()
-        c.execute("SELECT * FROM patient_live")
+        if claims and claims.get("role") == "caregiver":
+            ids = _collect_patient_ids_for_caregiver(c, str(claims["sub"]))
+            if not ids:
+                return []
+            placeholders = ",".join("?" for _ in ids)
+            c.execute(f"SELECT * FROM patient_live WHERE patient_id IN ({placeholders})", ids)
+        else:
+            c.execute("SELECT * FROM patient_live")
         rows = c.fetchall()
     out = []
     for row in rows:
