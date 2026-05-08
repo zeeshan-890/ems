@@ -339,6 +339,7 @@ class MonitoringController extends ChangeNotifier {
       _caregiverAuthEmail = auth.caregiverEmail;
       _suppressAlarmBootstrap = true;
       await _clearElderAuth();
+      _clearCaregiverDashboardCache();
       await _persistCaregiverAuth();
       _apiClient.setBearerToken(_caregiverToken);
       _statusMessage = 'Caregiver account ready.';
@@ -370,6 +371,7 @@ class MonitoringController extends ChangeNotifier {
       _caregiverAuthEmail = auth.caregiverEmail;
       _suppressAlarmBootstrap = true;
       await _clearElderAuth();
+      _clearCaregiverDashboardCache();
       await _persistCaregiverAuth();
       _apiClient.setBearerToken(_caregiverToken);
       _statusMessage = 'Welcome back $_caregiverName.';
@@ -395,6 +397,7 @@ class MonitoringController extends ChangeNotifier {
     _caregiverAuthEmail = '';
     _disconnectCaregiverAlertSocket();
     _stopAlarmIfPlaying();
+    _clearCaregiverDashboardCache();
     _elderAccessToken = accessToken;
     _apiClient.setBearerToken(accessToken);
     final trimmedPid = patientId.trim();
@@ -450,13 +453,36 @@ class MonitoringController extends ChangeNotifier {
     _alarmSilencedAt = null;
     _suppressAlarmBootstrap = false;
     _apiClient.setBearerToken(null);
-    _credentialHistory.clear();
-    _assignedPatients = <CaregiverAssignedPatientModel>[];
+    _clearCaregiverDashboardCache();
+    _patientId = null;
+    _deviceId = null;
+    _sessionId = null;
+    _patientName = '';
+    _patientAge = null;
+    _medicalNotes = '';
+    _emergencyContact = '';
+    _photoPath = null;
+    _homeLatitude = null;
+    _homeLongitude = null;
+    _liveSensorSnapshot.clear();
+    _latestTelemetry = null;
+    _lastDetection = null;
+    _lastMotionInference = null;
+    _statusMessage = 'Signed out. Please sign in again.';
     final preferences = _preferences ?? await SharedPreferences.getInstance();
     _preferences = preferences;
     await preferences.remove(_caregiverTokenKey);
     await preferences.remove(_caregiverNameKey);
     await preferences.remove(_caregiverEmailAuthKey);
+    await preferences.remove(_patientIdKey);
+    await preferences.remove(_deviceIdKey);
+    await preferences.remove(_patientNameKey);
+    await preferences.remove(_patientAgeKey);
+    await preferences.remove(_medicalNotesKey);
+    await preferences.remove(_emergencyContactKey);
+    await preferences.remove(_photoPathKey);
+    await preferences.remove(_homeLatitudeKey);
+    await preferences.remove(_homeLongitudeKey);
     _syncAlarmWithAlerts();
     notifyListeners();
   }
@@ -1172,11 +1198,13 @@ class MonitoringController extends ChangeNotifier {
         } catch (_) {
           // Keep previous assignment list if this endpoint is unavailable.
         }
+        _applyCaregiverScopeGuards();
       } else {
         _summary = null;
         _caregiverAlerts = <AlertRecordModel>[];
         _assignedPatients = <CaregiverAssignedPatientModel>[];
         _livePatients = await _apiClient.getLivePatients();
+        _applyPatientScopeGuards();
       }
 
       if (_patientId != null) {
@@ -1185,6 +1213,8 @@ class MonitoringController extends ChangeNotifier {
             .toList();
         if (matched.isNotEmpty) {
           _liveStatus = matched.first;
+        } else if (!isCaregiverAuthenticated) {
+          _liveStatus = null;
         }
       }
       _syncAlarmWithAlerts();
@@ -1637,6 +1667,61 @@ class MonitoringController extends ChangeNotifier {
       return message.substring('Exception: '.length);
     }
     return message;
+  }
+
+  void _clearCaregiverDashboardCache() {
+    _summary = null;
+    _livePatients = <LiveStatusModel>[];
+    _caregiverAlerts = <AlertRecordModel>[];
+    _assignedPatients = <CaregiverAssignedPatientModel>[];
+    _credentialHistory.clear();
+    _activeAlert = null;
+    _liveStatus = null;
+  }
+
+  void _applyCaregiverScopeGuards() {
+    if (!isCaregiverAuthenticated) {
+      return;
+    }
+    final ids = _assignedPatients.map((p) => p.id).toSet();
+    if (ids.isEmpty) {
+      _livePatients = <LiveStatusModel>[];
+      _caregiverAlerts = <AlertRecordModel>[];
+      _activeAlert = null;
+      _liveStatus = null;
+      return;
+    }
+
+    _livePatients = _livePatients.where((row) => ids.contains(row.patientId)).toList();
+    _caregiverAlerts = _caregiverAlerts
+        .where((alert) => ids.contains(alert.patientId))
+        .toList();
+    if (_activeAlert != null && !ids.contains(_activeAlert!.patientId)) {
+      _activeAlert = null;
+    }
+    if (_liveStatus != null && !ids.contains(_liveStatus!.patientId)) {
+      _liveStatus = null;
+    }
+  }
+
+  void _applyPatientScopeGuards() {
+    if (isCaregiverAuthenticated) {
+      return;
+    }
+    final pid = (_patientId ?? '').trim();
+    if (pid.isEmpty) {
+      _livePatients = <LiveStatusModel>[];
+      _liveStatus = null;
+      _activeAlert = null;
+      return;
+    }
+    _livePatients = _livePatients.where((row) => row.patientId == pid).toList();
+    if (_liveStatus != null && _liveStatus!.patientId != pid) {
+      _liveStatus = null;
+    }
+    if (_activeAlert != null && _activeAlert!.patientId != pid) {
+      _activeAlert = null;
+    }
   }
 
   @override

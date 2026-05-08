@@ -470,18 +470,41 @@ class _CaregiverAuthScreenState extends State<CaregiverAuthScreen> {
   }
 
   Future<void> _submit() async {
+    final email = _emailCtrl.text.trim();
+    final password = _passwordCtrl.text;
+    final fullName = _nameCtrl.text.trim();
+
+    if (_isSignup && fullName.isEmpty) {
+      _showValidation('Full name is required.');
+      return;
+    }
+    if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
+      _showValidation('Please enter a valid email address.');
+      return;
+    }
+    if (password.trim().length < 6) {
+      _showValidation('Password must be at least 6 characters.');
+      return;
+    }
+
     if (_isSignup) {
       await widget.controller.caregiverSignup(
-        fullName: _nameCtrl.text,
-        email: _emailCtrl.text,
-        password: _passwordCtrl.text,
+        fullName: fullName,
+        email: email,
+        password: password,
       );
     } else {
       await widget.controller.caregiverLogin(
-        email: _emailCtrl.text,
-        password: _passwordCtrl.text,
+        email: email,
+        password: password,
       );
     }
+  }
+
+  void _showValidation(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override

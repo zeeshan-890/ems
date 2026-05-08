@@ -466,10 +466,19 @@ def _persist_feedback_db(body: FallFeedbackEvent) -> None:
 def caregiver_signup(body: CaregiverSignupBody):
     init_schema()
     seed_default_admin()
+    full_name = body.full_name.strip()
+    email = body.email.strip().lower()
+    password = body.password
+    if not full_name:
+        raise HTTPException(status_code=422, detail="full_name is required")
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(status_code=422, detail="Valid email is required")
+    if not password or len(password.strip()) < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters")
     uid = uuid.uuid4().hex
     with get_connection() as conn:
         c = conn.cursor()
-        c.execute("SELECT id FROM users WHERE email = ?", (body.email.strip().lower(),))
+        c.execute("SELECT id FROM users WHERE email = ?", (email,))
         if c.fetchone():
             raise HTTPException(status_code=400, detail="Email already registered")
         c.execute(
@@ -477,19 +486,19 @@ def caregiver_signup(body: CaregiverSignupBody):
                VALUES (?,?,?,?,?,?,?)""",
             (
                 uid,
-                body.email.strip().lower(),
+                email,
                 None,
-                hash_password(body.password),
+                hash_password(password),
                 "caregiver",
-                body.full_name.strip(),
+                full_name,
                 iso_now(),
             ),
         )
-    token = create_token(user_id=uid, role="caregiver", email=body.email.strip().lower())
+    token = create_token(user_id=uid, role="caregiver", email=email)
     return {
         "access_token": token,
         "token_type": "bearer",
-        "caregiver": {"id": uid, "full_name": body.full_name.strip(), "email": body.email.strip().lower()},
+        "caregiver": {"id": uid, "full_name": full_name, "email": email},
     }
 
 
