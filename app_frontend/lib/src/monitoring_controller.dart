@@ -124,6 +124,10 @@ class MonitoringController extends ChangeNotifier {
   String _caregiverEmail = '';
   bool _alarmPlaying = false;
   bool _alarmSilencedByUser = false;
+  Set<String> _silencedSevereAlertIds = <String>{};
+  DateTime? _alarmSilencedAt;
+  bool _suppressAlarmBootstrap = false;
+  DateTime? _lastAlarmStartedAt;
   StreamSubscription<Position>? _locationSubscription;
   Position? _currentPosition;
   double? _homeLatitude;
@@ -286,20 +290,23 @@ class MonitoringController extends ChangeNotifier {
     _caregiverEmail = _preferences?.getString(_caregiverEmailKey) ?? '';
     _homeLatitude = _preferences?.getDouble(_homeLatitudeKey);
     _homeLongitude = _preferences?.getDouble(_homeLongitudeKey);
-    _caregiverToken = _preferences?.getString(_caregiverTokenKey);
+    // Caregiver must always re-authenticate from role launcher.
+    // Do not auto-restore caregiver token from local storage.
+    _caregiverToken = null;
     _caregiverName = _preferences?.getString(_caregiverNameKey) ?? '';
     _caregiverAuthEmail = _preferences?.getString(_caregiverEmailAuthKey) ?? '';
     _elderAccessToken = _preferences?.getString(_elderAccessTokenKey);
     _sessionId = null;
 
     _apiClient.updateBaseUrl(_backendUrl);
-    if (_caregiverToken != null && _caregiverToken!.isNotEmpty) {
-      _apiClient.setBearerToken(_caregiverToken);
-    } else if (_elderAccessToken != null && _elderAccessToken!.isNotEmpty) {
+    if (_elderAccessToken != null && _elderAccessToken!.isNotEmpty) {
       _apiClient.setBearerToken(_elderAccessToken);
     } else {
       _apiClient.setBearerToken(null);
     }
+
+    // Ensure legacy saved caregiver sessions do not silently auto-login next launch.
+    await _preferences?.remove(_caregiverTokenKey);
 
     _statusMessage = hasSetup
         ? 'Saved setup loaded. Check the backend and start monitoring.'
@@ -330,6 +337,7 @@ class MonitoringController extends ChangeNotifier {
       _caregiverToken = auth.accessToken;
       _caregiverName = auth.caregiverName;
       _caregiverAuthEmail = auth.caregiverEmail;
+      _suppressAlarmBootstrap = true;
       await _clearElderAuth();
       await _persistCaregiverAuth();
       _apiClient.setBearerToken(_caregiverToken);
@@ -360,6 +368,7 @@ class MonitoringController extends ChangeNotifier {
       _caregiverToken = auth.accessToken;
       _caregiverName = auth.caregiverName;
       _caregiverAuthEmail = auth.caregiverEmail;
+      _suppressAlarmBootstrap = true;
       await _clearElderAuth();
       await _persistCaregiverAuth();
       _apiClient.setBearerToken(_caregiverToken);
@@ -382,7 +391,10 @@ class MonitoringController extends ChangeNotifier {
     String? displayName,
   }) async {
     _caregiverToken = null;
+    _caregiverName = '';
+    _caregiverAuthEmail = '';
     _disconnectCaregiverAlertSocket();
+    _stopAlarmIfPlaying();
     _elderAccessToken = accessToken;
     _apiClient.setBearerToken(accessToken);
     final trimmedPid = patientId.trim();
@@ -400,7 +412,9 @@ class MonitoringController extends ChangeNotifier {
     }
     await _persistIdentifiers();
     await _persistSetup();
+    await _persistCaregiverAuth();
     await _persistElderAuth();
+    _syncAlarmWithAlerts();
     notifyListeners();
   }
 
@@ -430,6 +444,11 @@ class MonitoringController extends ChangeNotifier {
     _caregiverToken = null;
     _caregiverName = '';
     _caregiverAuthEmail = '';
+    _stopAlarmIfPlaying();
+    _alarmSilencedByUser = false;
+    _silencedSevereAlertIds = <String>{};
+    _alarmSilencedAt = null;
+    _suppressAlarmBootstrap = false;
     _apiClient.setBearerToken(null);
     _credentialHistory.clear();
     _assignedPatients = <CaregiverAssignedPatientModel>[];
@@ -438,6 +457,7 @@ class MonitoringController extends ChangeNotifier {
     await preferences.remove(_caregiverTokenKey);
     await preferences.remove(_caregiverNameKey);
     await preferences.remove(_caregiverEmailAuthKey);
+    _syncAlarmWithAlerts();
     notifyListeners();
   }
 
@@ -1474,17 +1494,53 @@ class MonitoringController extends ChangeNotifier {
     // Alarm is caregiver-only. Never play on patient/elder sessions.
     if (!isCaregiverAuthenticated) {
       _stopAlarmIfPlaying();
+      _alarmSilencedByUser = false;
+      _silencedSevereAlertIds = <String>{};
+      _alarmSilencedAt = null;
+      _suppressAlarmBootstrap = false;
       return;
     }
 
-    final hasSevereOpenAlert = _caregiverAlerts.any(
-      (alert) =>
-          alert.status != 'resolved' &&
-          (alert.severity == 'high_risk' || alert.severity == 'fall_detected'),
-    );
+    final severeOpenAlerts = _caregiverAlerts
+        .where(
+          (alert) =>
+              alert.status != 'resolved' &&
+              (alert.severity == 'high_risk' ||
+                  alert.severity == 'fall_detected'),
+        )
+        .toList();
+    final hasSevereOpenAlert = severeOpenAlerts.isNotEmpty;
+
+    // After caregiver sign-in/restore, don't ring for already-open alerts.
+    // Ring only for newly arriving severe alerts after this bootstrap.
+    if (_suppressAlarmBootstrap) {
+      _silencedSevereAlertIds = severeOpenAlerts
+          .map((alert) => alert.id)
+          .toSet();
+      _alarmSilencedByUser = hasSevereOpenAlert;
+      _suppressAlarmBootstrap = false;
+      _stopAlarmIfPlaying();
+      return;
+    }
 
     if (!hasSevereOpenAlert && _alarmSilencedByUser) {
       _alarmSilencedByUser = false;
+      _silencedSevereAlertIds = <String>{};
+      _alarmSilencedAt = null;
+    } else if (_alarmSilencedByUser) {
+      final silencedAt = _alarmSilencedAt;
+      final hasNewSevereAlert = severeOpenAlerts.any((alert) {
+        final createdAt = alert.createdAt;
+        if (silencedAt == null || createdAt == null) {
+          return !_silencedSevereAlertIds.contains(alert.id);
+        }
+        return createdAt.isAfter(silencedAt);
+      });
+      if (hasNewSevereAlert) {
+        _alarmSilencedByUser = false;
+        _silencedSevereAlertIds = <String>{};
+        _alarmSilencedAt = null;
+      }
     }
 
     final shouldPlay =
@@ -1494,12 +1550,7 @@ class MonitoringController extends ChangeNotifier {
         !_alarmSilencedByUser;
 
     if (shouldPlay && !_alarmPlaying) {
-      FlutterRingtonePlayer().playAlarm(
-        looping: true,
-        volume: 1.0,
-        asAlarm: true,
-      );
-      _alarmPlaying = true;
+      _startAlarmOnce();
       return;
     }
 
@@ -1516,18 +1567,29 @@ class MonitoringController extends ChangeNotifier {
     _alarmPlaying = false;
   }
 
+  void _startAlarmOnce() {
+    final now = DateTime.now();
+    final last = _lastAlarmStartedAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 20)) {
+      // Guard against duplicate queue/retrigger storms from rapid refreshes.
+      return;
+    }
+    FlutterRingtonePlayer().playAlarm(
+      looping: true,
+      volume: 1.0,
+      asAlarm: true,
+    );
+    _alarmPlaying = true;
+    _lastAlarmStartedAt = now;
+  }
+
   /// Backward-compatible entry point: only caregivers can play in-app alarm.
   Future<void> playEscalationFallAlarm() async {
     if (!isCaregiverAuthenticated) {
       return;
     }
     if (!_alarmPlaying) {
-      FlutterRingtonePlayer().playAlarm(
-        looping: true,
-        volume: 1.0,
-        asAlarm: true,
-      );
-      _alarmPlaying = true;
+      _startAlarmOnce();
       notifyListeners();
     }
   }
@@ -1541,12 +1603,7 @@ class MonitoringController extends ChangeNotifier {
 
     _alarmSilencedByUser = false;
     if (!_alarmPlaying) {
-      FlutterRingtonePlayer().playAlarm(
-        looping: true,
-        volume: 1.0,
-        asAlarm: true,
-      );
-      _alarmPlaying = true;
+      _startAlarmOnce();
       _statusMessage = 'Test alarm is playing.';
       notifyListeners();
     }
@@ -1554,6 +1611,16 @@ class MonitoringController extends ChangeNotifier {
 
   Future<void> clearActiveAlarm() async {
     _alarmSilencedByUser = true;
+    _alarmSilencedAt = DateTime.now();
+    _silencedSevereAlertIds = _caregiverAlerts
+        .where(
+          (alert) =>
+              alert.status != 'resolved' &&
+              (alert.severity == 'high_risk' ||
+                  alert.severity == 'fall_detected'),
+        )
+        .map((alert) => alert.id)
+        .toSet();
     _stopAlarmIfPlaying();
     _statusMessage = 'Alarm cleared.';
     notifyListeners();

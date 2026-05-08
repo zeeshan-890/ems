@@ -40,6 +40,61 @@ DETECTOR_CFG = {
     "fall_score": 0.80,
 }
 
+# MobiAct ADL codebook used by training data loaders.
+_ADL_CODE_TO_NAME: dict[str, str] = {
+    "STD": "Standing",
+    "WAL": "Walking",
+    "JOG": "Jogging",
+    "JUM": "Jumping",
+    "STU": "Stairs Up",
+    "STN": "Stairs Down",
+    "SCH": "Sit to Stand",
+    "SIT": "Sitting",
+    "CHU": "Stand to Sit",
+    "CSI": "Car Step In",
+    "CSO": "Car Step Out",
+    "LYI": "Lying",
+}
+
+# Legacy/derived ADL encoder path can emit numeric IDs for the original codebook.
+# These indices map back to code tokens, then to user-facing names above.
+_ADL_INDEX_TO_CODE: dict[int, str] = {
+    0: "CHU",
+    1: "CSI",
+    2: "CSO",
+    4: "JOG",
+    5: "JUM",
+    6: "LYI",
+    7: "SCH",
+    8: "SIT",
+    9: "STD",
+    10: "STN",
+    11: "STU",
+    12: "WAL",
+}
+
+
+def _humanize_activity_label(raw_label: Any) -> str | None:
+    if raw_label is None:
+        return None
+    s = str(raw_label).strip()
+    if not s:
+        return None
+
+    upper = s.upper()
+    if upper in _ADL_CODE_TO_NAME:
+        return _ADL_CODE_TO_NAME[upper]
+
+    try:
+        idx = int(s)
+    except ValueError:
+        return s
+
+    code = _ADL_INDEX_TO_CODE.get(idx)
+    if code is None:
+        return s
+    return _ADL_CODE_TO_NAME.get(code, code)
+
 
 def _heuristic_fall_probability(samples_dict: list[dict[str, Any]]) -> float:
     """Accelerometer-magnitude fallback when ML stack is unavailable or ``run_inference`` fails."""
@@ -48,6 +103,40 @@ def _heuristic_fall_probability(samples_dict: list[dict[str, Any]]) -> float:
         ax, ay, az = s["acc_x"], s["acc_y"], s["acc_z"]
         mags.append(float((ax * ax + ay * ay + az * az) ** 0.5))
     return float(min(1.0, max(0.0, (np.max(mags) / 25.0) if mags else 0.0)))
+
+
+def _heuristic_activity_label(samples_dict: list[dict[str, Any]]) -> str:
+    """Best-effort ADL label when ML inference is unavailable.
+
+    This is intentionally simple and deterministic so caregiver UI does not show
+    empty activity during fallback mode.
+    """
+    if not samples_dict:
+        return "unknown"
+
+    mags: list[float] = []
+    gyro_mags: list[float] = []
+    for s in samples_dict:
+        ax, ay, az = float(s["acc_x"]), float(s["acc_y"]), float(s["acc_z"])
+        gx, gy, gz = float(s["gyro_x"]), float(s["gyro_y"]), float(s["gyro_z"])
+        mags.append(float((ax * ax + ay * ay + az * az) ** 0.5))
+        gyro_mags.append(float((gx * gx + gy * gy + gz * gz) ** 0.5))
+
+    mean_mag = float(np.mean(mags))
+    std_mag = float(np.std(mags))
+    peak_mag = float(np.max(mags))
+    peak_gyro = float(np.max(gyro_mags)) if gyro_mags else 0.0
+
+    # Heuristic buckets tuned for phone IMU magnitude around gravity (m/s^2).
+    if peak_mag > 22.0 or std_mag > 3.5 or peak_gyro > 4.0:
+        return "running"
+    if std_mag < 0.30 and 8.5 <= mean_mag <= 10.8 and peak_gyro < 0.8:
+        return "standing"
+    if std_mag < 0.55 and peak_gyro < 1.2:
+        return "sitting"
+    if std_mag < 2.0:
+        return "walking"
+    return "moving"
 
 
 router = APIRouter()
@@ -709,7 +798,11 @@ def ingest_live(body: IngestLiveBody):
             )
             p_fall = float(raw["fall_probability"])
             branch = str(raw.get("branch", ""))
-            inferred_activity = raw.get("activity_label") if raw.get("branch") == "adl" else raw.get("fall_type_label")
+            inferred_activity = (
+                _humanize_activity_label(raw.get("activity_label"))
+                if raw.get("branch") == "adl"
+                else _humanize_activity_label(raw.get("fall_type_label"))
+            )
             ml_ok = True
             inference_source = "model"
             logger.info(
@@ -724,7 +817,7 @@ def ingest_live(body: IngestLiveBody):
             logger.warning("run_inference failed; using heuristic fall probability: %s", exc, exc_info=True)
             p_fall = _heuristic_fall_probability(samples_dict)
             branch = "unknown"
-            inferred_activity = None
+            inferred_activity = _heuristic_activity_label(samples_dict)
             ml_ok = False
             inference_source = "heuristic"
             logger.info(
@@ -736,6 +829,7 @@ def ingest_live(body: IngestLiveBody):
             )
     else:
         p_fall = _heuristic_fall_probability(samples_dict)
+        inferred_activity = _heuristic_activity_label(samples_dict)
         logger.info(
             "[ingest/live] inference=heuristic patient_id=%s session_id=%s samples=%d reason=artifacts_not_loaded p_fall=%.4f",
             body.patient_id,

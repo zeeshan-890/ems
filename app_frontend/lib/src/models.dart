@@ -30,6 +30,82 @@ double? _parseDoubleLoose(dynamic v) {
 double _parseDoubleLooseWithDefault(dynamic v, [double fallback = 0.0]) =>
     _parseDoubleLoose(v) ?? fallback;
 
+const Map<String, String> _adlCodeToName = <String, String>{
+  'STD': 'Standing',
+  'WAL': 'Walking',
+  'JOG': 'Jogging',
+  'JUM': 'Jumping',
+  'STU': 'Stairs Up',
+  'STN': 'Stairs Down',
+  'SCH': 'Sit to Stand',
+  'SIT': 'Sitting',
+  'CHU': 'Stand to Sit',
+  'CSI': 'Car Step In',
+  'CSO': 'Car Step Out',
+  'LYI': 'Lying',
+};
+
+const Map<String, String> _fallCodeToName = <String, String>{
+  'BSC': 'Back Fall',
+  'FOL': 'Forward Fall',
+  'FKL': 'Knees Fall',
+  'SDL': 'Side Fall',
+};
+
+const Map<int, String> _adlIndexToCode = <int, String>{
+  0: 'CHU',
+  1: 'CSI',
+  2: 'CSO',
+  4: 'JOG',
+  5: 'JUM',
+  6: 'LYI',
+  7: 'SCH',
+  8: 'SIT',
+  9: 'STD',
+  10: 'STN',
+  11: 'STU',
+  12: 'WAL',
+};
+
+String? _humanizeActivityLabel(dynamic raw) {
+  if (raw == null) return null;
+  final s = raw.toString().trim();
+  if (s.isEmpty) return null;
+
+  final upper = s.toUpperCase();
+  final direct = _adlCodeToName[upper];
+  if (direct != null) return direct;
+  final fallDirect = _fallCodeToName[upper];
+  if (fallDirect != null) return fallDirect;
+
+  final idx = int.tryParse(s);
+  if (idx == null) return s;
+  final code = _adlIndexToCode[idx];
+  if (code == null) return s;
+  return _adlCodeToName[code] ?? code;
+}
+
+String? _simplifyActivityLabel(String? label) {
+  if (label == null) return null;
+  final t = label.trim();
+  if (t.isEmpty) return null;
+  final lower = t.toLowerCase();
+
+  if (lower.contains('jog') || lower.contains('run')) return 'Running';
+  if (lower.contains('walk') ||
+      lower.contains('stairs') ||
+      lower.contains('car step')) {
+    return 'Walking';
+  }
+  if (lower.contains('sit') && lower.contains('stand')) return 'Standing';
+  if (lower.contains('sitting')) return 'Sitting';
+  if (lower.contains('lying')) return 'Lying';
+  if (lower.contains('standing')) return 'Standing';
+  if (lower.contains('jump')) return 'Active movement';
+
+  return t;
+}
+
 Map<String, double> _parseMetricsMap(dynamic raw) {
   if (raw is! Map) return const {};
   final out = <String, double>{};
@@ -280,7 +356,9 @@ class DetectionResultModel {
       severity: json['severity'] as String? ?? 'low',
       score: _parseDoubleLooseWithDefault(json['score']),
       fallProbability: _parseDoubleLooseWithDefault(json['fall_probability']),
-      predictedActivityClass: json['predicted_activity_class'] as String?,
+      predictedActivityClass: _simplifyActivityLabel(
+        _humanizeActivityLabel(json['predicted_activity_class']),
+      ),
       frailtyProxyScore: _parseDoubleLoose(json['frailty_proxy_score']),
       gaitStabilityScore: _parseDoubleLoose(json['gait_stability_score']),
       movementDisorderScore: _parseDoubleLoose(json['movement_disorder_score']),
@@ -329,7 +407,9 @@ class MotionInferenceResponseModel {
       fallProbability: _parseDoubleLooseWithDefault(json['fall_probability']),
       fallThreshold: _parseDoubleLooseWithDefault(json['fall_threshold'], 0.5),
       branch: json['branch'] as String? ?? 'unknown',
-      activityLabel: json['activity_label'] as String?,
+      activityLabel: _simplifyActivityLabel(
+        _humanizeActivityLabel(json['activity_label']),
+      ),
       activityClassIndex: _parseIntLoose(json['activity_class_index']),
       fallTypeCode: json['fall_type_code'] as String?,
       fallTypeLabel: json['fall_type_label'] as String?,
@@ -406,7 +486,9 @@ class LiveStatusModel {
       severity: json['severity'] as String? ?? 'low',
       score: _parseDoubleLooseWithDefault(json['score']),
       fallProbability: _parseDoubleLooseWithDefault(json['fall_probability']),
-      predictedActivityClass: json['predicted_activity_class'] as String?,
+      predictedActivityClass: _simplifyActivityLabel(
+        _humanizeActivityLabel(json['predicted_activity_class']),
+      ),
       lastMessage: json['last_message'] as String? ?? 'No live status yet.',
       sampleRateHz: _parseDoubleLoose(json['sample_rate_hz']),
       latestMetrics: _parseMetricsMap(json['latest_metrics']),

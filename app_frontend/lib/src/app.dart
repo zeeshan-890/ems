@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart' as gmap;
+import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'models.dart';
@@ -173,39 +173,71 @@ class _FallAwarePatientHomeState extends State<FallAwarePatientHome> {
     MotionInferenceResponseModel m,
     String key,
   ) {
+    String selectedResponse = 'need_help';
     showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Fall detected'),
-          content: SingleChildScrollView(child: Text(m.summaryLine)),
-          actions: [
-            TextButton(
-              onPressed: () => _submit(ctx, controller, m, 'false_alarm'),
-              child: const Text('No fall'),
-            ),
-            TextButton(
-              onPressed: () => _submit(ctx, controller, m, 'okay'),
-              child: const Text('I am okay'),
-            ),
-            TextButton(
-              onPressed: () => _submit(ctx, controller, m, 'need_help'),
-              child: const Text('Need help'),
-            ),
-            TextButton(
-              onPressed: () => _submit(ctx, controller, m, 'wrong_fall_type'),
-              child: const Text('Wrong type'),
-            ),
-            TextButton(
-              onPressed: () => _submit(ctx, controller, m, 'correct_fall_type'),
-              child: const Text('Correct type'),
-            ),
-            TextButton(
-              onPressed: () => _submit(ctx, controller, m, 'no_help_needed'),
-              child: const Text('No help needed'),
-            ),
-          ],
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Fall detected'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(m.summaryLine),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Your caregiver has already been alerted automatically.',
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: selectedResponse,
+                      decoration: const InputDecoration(
+                        labelText: 'Your feedback',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'need_help',
+                          child: Text('Need help'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'okay',
+                          child: Text('I am okay'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+                        setDialogState(() {
+                          selectedResponse = value;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Close'),
+                ),
+                FilledButton(
+                  onPressed: () => _submit(
+                    ctx,
+                    controller,
+                    m,
+                    selectedResponse,
+                  ),
+                  child: const Text('Submit'),
+                ),
+              ],
+            );
+          },
         );
       },
     ).then((_) {
@@ -232,7 +264,6 @@ class _FallAwarePatientHomeState extends State<FallAwarePatientHome> {
         'fall_probability': m.fallProbability,
       });
     } catch (_) {}
-    setState(() => _lastShownKey = null);
   }
 }
 
@@ -900,6 +931,10 @@ class CaregiverDashboard extends StatelessWidget {
             'No live data yet. Patient can sign in with generated credentials.';
         final movement = (live?.fallProbability ?? 0) * 100;
         final ageLabel = p.age == null ? 'Age not set' : '${p.age} years';
+        final activityLabel =
+            (live?.predictedActivityClass ?? '').trim().isEmpty
+            ? 'Unavailable'
+            : live!.predictedActivityClass!;
         final updatedLabel = live != null
             ? (live.locationUpdatedAt != null
                   ? _formatDateTime(live.locationUpdatedAt)
@@ -947,6 +982,8 @@ class CaregiverDashboard extends StatelessWidget {
               Expanded(child: _MiniTrendCard(value: movement / 100)),
             ],
           ),
+          const SizedBox(height: 10),
+          _StatCard(label: 'Current Activity', value: activityLabel),
           const SizedBox(height: 16),
         ]);
       }
@@ -1040,6 +1077,10 @@ class LiveMonitoringScreen extends StatelessWidget {
                 0)
             .clamp(0.0, 1.0)
             .toDouble();
+    final activityLabel =
+        (live?.predictedActivityClass ?? '').trim().isEmpty
+        ? 'Unavailable'
+        : live!.predictedActivityClass!;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -1062,6 +1103,8 @@ class LiveMonitoringScreen extends StatelessWidget {
         _StatCard(label: 'Stability', value: _stabilityText(riskValue)),
         const SizedBox(height: 10),
         _StatCard(label: 'Alert Level', value: _severityLabel(severity)),
+        const SizedBox(height: 10),
+        _StatCard(label: 'Current Activity', value: activityLabel),
         const SizedBox(height: 16),
         const Text(
           'Recent timeline',
@@ -1302,13 +1345,56 @@ class InsightsScreen extends StatelessWidget {
   }
 }
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.controller});
 
   final MonitoringController controller;
 
   @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late double _sensitivityValue;
+
+  @override
+  void initState() {
+    super.initState();
+    _sensitivityValue = _levelToSlider(widget.controller.alertSensitivity);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final backendValue = _levelToSlider(controller.alertSensitivity);
+    if (!controller.isBusy && backendValue != _sensitivityValue) {
+      _sensitivityValue = backendValue;
+    }
+
+    String sliderHint(double value) {
+      switch (value.round()) {
+        case 0:
+          return 'Lower sensitivity: fewer alerts, but subtle falls can be missed.';
+        case 2:
+          return 'Higher sensitivity: catches subtle falls, may raise extra alerts.';
+        case 1:
+        default:
+          return 'Balanced sensitivity for everyday use.';
+      }
+    }
+
+    String sliderLabel(double value) {
+      switch (value.round()) {
+        case 0:
+          return 'Low';
+        case 2:
+          return 'High';
+        case 1:
+        default:
+          return 'Medium';
+      }
+    }
+
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -1328,6 +1414,58 @@ class SettingsScreen extends StatelessWidget {
             onChanged: (v) => controller.setAlertViaAlarm(v),
           ),
         ),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _cardDecoration(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Fall detection sensitivity',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                sliderHint(_sensitivityValue),
+                style: const TextStyle(color: Color(0xFF5D7385)),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text('Low'),
+                  Expanded(
+                    child: Slider(
+                      value: _sensitivityValue,
+                      min: 0,
+                      max: 2,
+                      divisions: 2,
+                      label: sliderLabel(_sensitivityValue),
+                      onChanged: controller.isBusy
+                          ? null
+                          : (value) {
+                              setState(() => _sensitivityValue = value);
+                            },
+                      onChangeEnd: controller.isBusy
+                          ? null
+                          : (value) {
+                              controller.setAlertSensitivity(
+                                _sliderToLevel(value),
+                              );
+                            },
+                    ),
+                  ),
+                  const Text('High'),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Current: ${sliderLabel(_sensitivityValue)}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
         const SizedBox(height: 24),
         SizedBox(
           width: double.infinity,
@@ -1339,6 +1477,30 @@ class SettingsScreen extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+double _levelToSlider(String level) {
+  switch (level.trim().toLowerCase()) {
+    case 'low':
+      return 0;
+    case 'high':
+      return 2;
+    case 'medium':
+    default:
+      return 1;
+  }
+}
+
+String _sliderToLevel(double value) {
+  switch (value.round()) {
+    case 0:
+      return 'low';
+    case 2:
+      return 'high';
+    case 1:
+    default:
+      return 'medium';
   }
 }
 
@@ -1867,16 +2029,14 @@ class CaregiverPatientsLocationMap extends StatelessWidget {
       );
     }
 
-    final points = withLoc
-        .map((p) => gmap.LatLng(p.latitude!, p.longitude!))
-        .toList();
+    final points = withLoc.map((p) => LatLng(p.latitude!, p.longitude!)).toList();
     double sumLat = 0, sumLon = 0;
     for (final q in points) {
       sumLat += q.latitude;
       sumLon += q.longitude;
     }
     final n = points.length;
-    final center = gmap.LatLng(sumLat / n, sumLon / n);
+    final center = LatLng(sumLat / n, sumLon / n);
 
     return Container(
       height: mapHeight,
@@ -1886,30 +2046,37 @@ class CaregiverPatientsLocationMap extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
-            child: gmap.GoogleMap(
-              initialCameraPosition: gmap.CameraPosition(
-                target: center,
-                zoom: n == 1 ? 15 : 11,
+            child: FlutterMap(
+              options: MapOptions(
+                initialCenter: center,
+                initialZoom: n == 1 ? 15 : 11,
+                interactionOptions: const InteractionOptions(
+                  flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+                ),
               ),
-              myLocationButtonEnabled: false,
-              mapToolbarEnabled: false,
-              markers: {
-                for (final p in withLoc)
-                  gmap.Marker(
-                    markerId: gmap.MarkerId(p.patientId),
-                    position: gmap.LatLng(p.latitude!, p.longitude!),
-                    icon: gmap.BitmapDescriptor.defaultMarkerWithHue(
-                      p.headingDegrees != null
-                          ? gmap.BitmapDescriptor.hueAzure
-                          : gmap.BitmapDescriptor.hueRed,
-                    ),
-                    infoWindow: gmap.InfoWindow(
-                      title: p.patientName,
-                      snippet:
-                          '${p.latitude!.toStringAsFixed(5)}, ${p.longitude!.toStringAsFixed(5)}',
-                    ),
-                  ),
-              },
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.example.newapp',
+                ),
+                MarkerLayer(
+                  markers: [
+                    for (final p in withLoc)
+                      Marker(
+                        point: LatLng(p.latitude!, p.longitude!),
+                        width: 40,
+                        height: 40,
+                        child: Icon(
+                          Icons.location_on,
+                          color: p.headingDegrees != null
+                              ? const Color(0xFF2A7DA8)
+                              : const Color(0xFFB53B34),
+                          size: 34,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
             ),
           ),
           Padding(
@@ -1944,52 +2111,67 @@ class _LocationMapCard extends StatelessWidget {
     this.headingDegrees,
   });
 
-  final gmap.LatLng current;
-  final gmap.LatLng? home;
+  final LatLng current;
+  final LatLng? home;
   final bool compact;
   final double? headingDegrees;
 
   @override
   Widget build(BuildContext context) {
-    final points = <gmap.LatLng>[if (home != null) home!, current];
+    final points = <LatLng>[if (home != null) home!, current];
     return Container(
       height: compact ? 200 : 280,
       clipBehavior: Clip.antiAlias,
       decoration: _cardDecoration(),
-      child: gmap.GoogleMap(
-        initialCameraPosition: gmap.CameraPosition(target: current, zoom: 15),
-        mapToolbarEnabled: false,
-        myLocationButtonEnabled: false,
-        markers: {
-          gmap.Marker(
-            markerId: const gmap.MarkerId('current'),
-            position: current,
-            icon: gmap.BitmapDescriptor.defaultMarkerWithHue(
-              headingDegrees != null
-                  ? gmap.BitmapDescriptor.hueAzure
-                  : gmap.BitmapDescriptor.hueRed,
-            ),
-            infoWindow: const gmap.InfoWindow(title: 'Current location'),
+      child: FlutterMap(
+        options: MapOptions(
+          initialCenter: current,
+          initialZoom: 15,
+          interactionOptions: const InteractionOptions(
+            flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),
-          if (home != null)
-            gmap.Marker(
-              markerId: const gmap.MarkerId('home'),
-              position: home!,
-              icon: gmap.BitmapDescriptor.defaultMarkerWithHue(
-                gmap.BitmapDescriptor.hueGreen,
-              ),
-              infoWindow: const gmap.InfoWindow(title: 'Saved home'),
-            ),
-        },
-        polylines: {
+        ),
+        children: [
+          TileLayer(
+            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            userAgentPackageName: 'com.example.newapp',
+          ),
           if (points.length == 2)
-            gmap.Polyline(
-              polylineId: const gmap.PolylineId('home_line'),
-              points: points,
-              width: 4,
-              color: const Color(0xFF2A7DA8),
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: points,
+                  strokeWidth: 4,
+                  color: const Color(0xFF2A7DA8),
+                ),
+              ],
             ),
-        },
+          MarkerLayer(
+            markers: [
+              Marker(
+                point: current,
+                width: 40,
+                height: 40,
+                child: Icon(
+                  Icons.my_location,
+                  color: headingDegrees != null
+                      ? const Color(0xFF2A7DA8)
+                      : const Color(0xFFB53B34),
+                ),
+              ),
+              if (home != null)
+                Marker(
+                  point: home!,
+                  width: 40,
+                  height: 40,
+                  child: const Icon(
+                    Icons.home,
+                    color: Color(0xFF1B9B8B),
+                  ),
+                ),
+            ],
+          ),
+        ],
       ),
     );
   }

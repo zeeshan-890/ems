@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart' as gmap;
+import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'monitoring_controller.dart';
@@ -199,7 +199,7 @@ class PatientSettingsMapPage extends StatefulWidget {
 }
 
 class _PatientSettingsMapPageState extends State<PatientSettingsMapPage> {
-  gmap.LatLng? _mapPick;
+  LatLng? _mapPick;
 
   double _distanceKm(double lat1, double lon1, double lat2, double lon2) {
     const distance = Distance();
@@ -219,13 +219,13 @@ class _PatientSettingsMapPageState extends State<PatientSettingsMapPage> {
         final pos = c.currentPosition;
         final hasHome = c.hasHomeLocation;
         final home = hasHome
-            ? gmap.LatLng(c.homeLatitude!, c.homeLongitude!)
+            ? LatLng(c.homeLatitude!, c.homeLongitude!)
             : null;
         final pick = _mapPick;
 
         final center = pos != null
-            ? gmap.LatLng(pos.latitude, pos.longitude)
-            : (pick ?? home ?? const gmap.LatLng(20, 0));
+            ? LatLng(pos.latitude, pos.longitude)
+            : (pick ?? home ?? const LatLng(20, 0));
 
         double? distKm;
         if (pos != null && hasHome) {
@@ -287,62 +287,71 @@ class _PatientSettingsMapPageState extends State<PatientSettingsMapPage> {
               height: 320,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
-                child: gmap.GoogleMap(
+                child: FlutterMap(
                   key: ValueKey(
                     '${center.latitude}_${center.longitude}_${pick?.latitude}_${pick?.longitude}',
                   ),
-                  initialCameraPosition: gmap.CameraPosition(
-                    target: center,
-                    zoom: pos != null ? 15 : (hasHome || pick != null ? 12 : 3),
+                  options: MapOptions(
+                    initialCenter: center,
+                    initialZoom: pos != null ? 15 : (hasHome || pick != null ? 12 : 3),
+                    onTap: (_, latlng) => setState(() => _mapPick = latlng),
+                    interactionOptions: const InteractionOptions(
+                      flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+                    ),
                   ),
-                  onTap: (latlng) => setState(() => _mapPick = latlng),
-                  myLocationButtonEnabled: false,
-                  mapToolbarEnabled: false,
-                  markers: {
-                    if (pos != null)
-                      gmap.Marker(
-                        markerId: const gmap.MarkerId('current'),
-                        position: gmap.LatLng(pos.latitude, pos.longitude),
-                        icon: gmap.BitmapDescriptor.defaultMarkerWithHue(
-                          gmap.BitmapDescriptor.hueAzure,
-                        ),
-                        infoWindow: const gmap.InfoWindow(
-                          title: 'Current location',
-                        ),
-                      ),
-                    if (home != null)
-                      gmap.Marker(
-                        markerId: const gmap.MarkerId('home'),
-                        position: home,
-                        icon: gmap.BitmapDescriptor.defaultMarkerWithHue(
-                          gmap.BitmapDescriptor.hueGreen,
-                        ),
-                        infoWindow: const gmap.InfoWindow(title: 'Saved home'),
-                      ),
-                    if (pick != null)
-                      gmap.Marker(
-                        markerId: const gmap.MarkerId('pick'),
-                        position: pick,
-                        icon: gmap.BitmapDescriptor.defaultMarkerWithHue(
-                          gmap.BitmapDescriptor.hueOrange,
-                        ),
-                        infoWindow: const gmap.InfoWindow(
-                          title: 'Selected home pin',
-                        ),
-                      ),
-                  },
-                  polylines: {
+                  children: [
+                    TileLayer(
+                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.newapp',
+                    ),
                     if (pos != null && home != null)
-                      gmap.Polyline(
-                        polylineId: const gmap.PolylineId('home_line'),
-                        points: [
-                          gmap.LatLng(pos.latitude, pos.longitude),
-                          home,
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: [LatLng(pos.latitude, pos.longitude), home],
+                            strokeWidth: 4,
+                            color: const Color(0xFF2A7DA8),
+                          ),
                         ],
-                        width: 4,
-                        color: const Color(0xFF2A7DA8),
                       ),
-                  },
+                    MarkerLayer(
+                      markers: [
+                        if (pos != null)
+                          Marker(
+                            point: LatLng(pos.latitude, pos.longitude),
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.my_location,
+                              color: Color(0xFF2A7DA8),
+                              size: 30,
+                            ),
+                          ),
+                        if (home != null)
+                          Marker(
+                            point: home,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.home,
+                              color: Color(0xFF1B9B8B),
+                              size: 34,
+                            ),
+                          ),
+                        if (pick != null)
+                          Marker(
+                            point: pick,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.location_on,
+                              color: Color(0xFFF0A542),
+                              size: 36,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
