@@ -438,8 +438,25 @@ class MonitoringController extends ChangeNotifier {
       await refreshCaregiverData(silent: true);
       _statusMessage = 'Patient removed. You can enroll someone new.';
     } catch (error) {
-      _lastError = _formatError(error);
-      _statusMessage = 'Unable to remove patient.';
+      final msg = _formatError(error);
+      final lower = msg.toLowerCase();
+      final missingOrUnlinked =
+          lower.contains('not found') ||
+          lower.contains('not linked') ||
+          lower.contains('cannot') && lower.contains('this caregiver');
+      if (missingOrUnlinked) {
+        // If backend already deleted/unlinked this patient, clear stale local cache
+        // so enrollment UI is usable again.
+        _credentialHistory.removeWhere((c) => c.patientId == patientId.trim());
+        await _persistCredentialHistoryForCurrentCaregiver();
+        await refreshCaregiverData(silent: true);
+        _lastError = null;
+        _statusMessage =
+            'Patient was already removed on server. Local record is now cleared.';
+      } else {
+        _lastError = msg;
+        _statusMessage = 'Unable to remove patient.';
+      }
     } finally {
       _isBusy = false;
       notifyListeners();
@@ -1541,9 +1558,23 @@ class MonitoringController extends ChangeNotifier {
       return;
     }
 
-    final severeOpenAlerts = _caregiverAlerts
-        .where(_isAlarmEligibleAlert)
-        .toList();
+    final liveSeverityByPatient = <String, String>{
+      for (final row in _livePatients) row.patientId: row.severity,
+    };
+    final severeOpenAlerts = _caregiverAlerts.where((alert) {
+      if (!_isAlarmEligibleAlert(alert)) {
+        return false;
+      }
+      // Keep notifications/alarm consistent with the main dashboard live card.
+      // If live stream says non-fall right now, don't ring for stale fall alerts.
+      final liveSeverity = (liveSeverityByPatient[alert.patientId] ?? '')
+          .trim()
+          .toLowerCase();
+      if (liveSeverity.isNotEmpty && liveSeverity != 'fall_detected') {
+        return false;
+      }
+      return true;
+    }).toList();
     final hasSevereOpenAlert = severeOpenAlerts.isNotEmpty;
 
     // After caregiver sign-in/restore, don't ring for already-open alerts.

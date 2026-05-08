@@ -15,9 +15,9 @@ MEDIUM = {
 }
 
 # Guardrail against false alarms from tiny handset motion.
-# A "true" fall should usually show at least one noticeable impact/rotation cue.
-FALL_MIN_PEAK_ACC_G = 1.35
-FALL_MIN_PEAK_GYRO_DPS = 120.0
+# A "true" fall should usually show at least one clear impact/rotation cue.
+FALL_MIN_PEAK_ACC_G = 1.70
+FALL_MIN_PEAK_GYRO_DPS = 180.0
 
 
 def _severity_from_fall_prob(p: float, thr: float) -> str:

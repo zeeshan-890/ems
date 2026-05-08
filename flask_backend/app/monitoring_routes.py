@@ -433,23 +433,8 @@ def tick_fall_escalations(conn) -> None:
                 "UPDATE fall_incidents SET stage = ? WHERE id = ?",
                 ("alarm_local", rid),
             )
-            aid = uuid.uuid4().hex
-            c.execute(
-                """INSERT INTO alerts (id, patient_id, device_id, session_id, severity, status, message, score, created_at, manually_triggered)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    aid,
-                    pid,
-                    None,
-                    row["session_id"],
-                    "high_risk",
-                    "open",
-                    "Fall detected — no elder response within deadline (local alarm phase).",
-                    0.92,
-                    iso_now(),
-                    0,
-                ),
-            )
+            # Do not generate a timeout-based high_risk alert when elder feedback
+            # is missing. This avoids labeling non-response as additional risk.
         elif stage == "alarm_local" and adt and now > adt:
             c.execute(
                 "UPDATE fall_incidents SET stage = ? WHERE id = ?",
@@ -804,7 +789,11 @@ def stop_session(session_id: str, body: SessionStopBody):
 def ingest_live(body: IngestLiveBody):
     init_schema()
     art = _get_art()
-    thr = float(art.fall_threshold) if art is not None else 0.5
+    # Use live detector config so caregiver sensitivity slider affects ingest behavior.
+    # Manifest threshold is used only as a startup fallback.
+    thr = float(DETECTOR_CFG.get("fall_score", 0.8))
+    if thr <= 0:
+        thr = float(art.fall_threshold) if art is not None else 0.8
 
     samples_dict = [s.model_dump(exclude_none=True) for s in body.samples]
     feat_vec, acc300, gyro300, ori300 = samples_to_feature_vector(samples_dict)
@@ -895,45 +884,49 @@ def ingest_live(body: IngestLiveBody):
 
         alert_ids: list[str] = []
         if detection["severity"] == "fall_detected" and p_fall >= thr:
-            aid = uuid.uuid4().hex
-            c.execute(
-                """INSERT INTO alerts (id, patient_id, device_id, session_id, severity, status, message, score, created_at, manually_triggered)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    aid,
-                    body.patient_id,
-                    body.device_id,
-                    body.session_id,
-                    "fall_detected",
-                    "open",
-                    detection["message"],
-                    float(detection["score"]),
-                    iso_now(),
-                    0,
-                ),
-            )
-            alert_ids.append(aid)
-            active_alert = {
-                "id": aid,
-                "patient_id": body.patient_id,
-                "severity": "fall_detected",
-                "status": "open",
-                "message": detection["message"],
-                "score": float(detection["score"]),
-                "created_at": iso_now(),
-                "manually_triggered": False,
-                "alarm_eligible": _is_alarm_eligible_alert(
-                    severity="fall_detected",
-                    message=detection["message"],
-                    status="open",
-                ),
-            }
-
             c.execute(
                 "SELECT id FROM fall_incidents WHERE patient_id = ? AND stage IN ('awaiting_response','alarm_local')",
                 (body.patient_id,),
             )
-            if not c.fetchone():
+            has_open_incident = c.fetchone() is not None
+
+            # Avoid duplicate fall notifications while the same incident is active.
+            if not has_open_incident:
+                aid = uuid.uuid4().hex
+                created_at = iso_now()
+                c.execute(
+                    """INSERT INTO alerts (id, patient_id, device_id, session_id, severity, status, message, score, created_at, manually_triggered)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        aid,
+                        body.patient_id,
+                        body.device_id,
+                        body.session_id,
+                        "fall_detected",
+                        "open",
+                        detection["message"],
+                        float(detection["score"]),
+                        created_at,
+                        0,
+                    ),
+                )
+                alert_ids.append(aid)
+                active_alert = {
+                    "id": aid,
+                    "patient_id": body.patient_id,
+                    "severity": "fall_detected",
+                    "status": "open",
+                    "message": detection["message"],
+                    "score": float(detection["score"]),
+                    "created_at": created_at,
+                    "manually_triggered": False,
+                    "alarm_eligible": _is_alarm_eligible_alert(
+                        severity="fall_detected",
+                        message=detection["message"],
+                        status="open",
+                    ),
+                }
+
                 iid = uuid.uuid4().hex
                 now = datetime.now(timezone.utc)
                 c.execute(
