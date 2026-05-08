@@ -1490,6 +1490,11 @@ class MonitoringController extends ChangeNotifier {
     });
   }
 
+  bool _isAlarmEligibleAlert(AlertRecordModel alert) {
+    // Alarm should be strict: only confirmed fall detections, not high-risk drift.
+    return alert.status != 'resolved' && alert.severity == 'fall_detected';
+  }
+
   void _syncAlarmWithAlerts() {
     // Alarm is caregiver-only. Never play on patient/elder sessions.
     if (!isCaregiverAuthenticated) {
@@ -1502,12 +1507,7 @@ class MonitoringController extends ChangeNotifier {
     }
 
     final severeOpenAlerts = _caregiverAlerts
-        .where(
-          (alert) =>
-              alert.status != 'resolved' &&
-              (alert.severity == 'high_risk' ||
-                  alert.severity == 'fall_detected'),
-        )
+        .where(_isAlarmEligibleAlert)
         .toList();
     final hasSevereOpenAlert = severeOpenAlerts.isNotEmpty;
 
@@ -1613,12 +1613,7 @@ class MonitoringController extends ChangeNotifier {
     _alarmSilencedByUser = true;
     _alarmSilencedAt = DateTime.now();
     _silencedSevereAlertIds = _caregiverAlerts
-        .where(
-          (alert) =>
-              alert.status != 'resolved' &&
-              (alert.severity == 'high_risk' ||
-                  alert.severity == 'fall_detected'),
-        )
+        .where(_isAlarmEligibleAlert)
         .map((alert) => alert.id)
         .toSet();
     _stopAlarmIfPlaying();
