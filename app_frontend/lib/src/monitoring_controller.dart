@@ -47,6 +47,7 @@ class MonitoringController extends ChangeNotifier {
   static const double defaultSampleRateHz = 50.0;
   static const int offlineWindowSizeSamples = 128;
   static const int offlineWindowStepSamples = 64;
+  static const Duration _caregiverRefreshInterval = Duration(seconds: 2);
 
   static const String _backendUrlKey = 'backend_url';
   static const String _patientNameKey = 'patient_name';
@@ -124,8 +125,10 @@ class MonitoringController extends ChangeNotifier {
   bool _alertViaAlarm = true;
   String _caregiverEmail = '';
   bool _alarmPlaying = false;
+  bool _alarmLatchedActive = false;
   bool _alarmSilencedByUser = false;
   Set<String> _silencedSevereAlertIds = <String>{};
+  Set<String> _latchedFallPatientIds = <String>{};
   DateTime? _alarmSilencedAt;
   bool _suppressAlarmBootstrap = false;
   DateTime? _lastAlarmStartedAt;
@@ -210,6 +213,9 @@ class MonitoringController extends ChangeNotifier {
   bool get alertViaAlarm => _alertViaAlarm;
   String get caregiverEmail => _caregiverEmail;
   bool get isAlarmPlaying => _alarmPlaying;
+  bool get hasLatchedFall => _latchedFallPatientIds.isNotEmpty;
+  bool isPatientFallLatched(String patientId) =>
+      _latchedFallPatientIds.contains(patientId.trim());
   Position? get currentPosition => _currentPosition;
   bool get locationTrackingEnabled => _locationTrackingEnabled;
   String? get locationError => _locationError;
@@ -469,6 +475,7 @@ class MonitoringController extends ChangeNotifier {
     _caregiverName = '';
     _caregiverAuthEmail = '';
     _stopAlarmIfPlaying();
+    _alarmLatchedActive = false;
     _alarmSilencedByUser = false;
     _silencedSevereAlertIds = <String>{};
     _alarmSilencedAt = null;
@@ -1535,7 +1542,7 @@ class MonitoringController extends ChangeNotifier {
 
   void _ensureAutoRefresh() {
     _autoRefreshTimer?.cancel();
-    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+    _autoRefreshTimer = Timer.periodic(_caregiverRefreshInterval, (_) {
       if (_initialized) {
         unawaited(refreshCaregiverData(silent: true));
       }
@@ -1551,8 +1558,10 @@ class MonitoringController extends ChangeNotifier {
     // Alarm is caregiver-only. Never play on patient/elder sessions.
     if (!isCaregiverAuthenticated) {
       _stopAlarmIfPlaying();
+      _alarmLatchedActive = false;
       _alarmSilencedByUser = false;
       _silencedSevereAlertIds = <String>{};
+      _latchedFallPatientIds = <String>{};
       _alarmSilencedAt = null;
       _suppressAlarmBootstrap = false;
       return;
@@ -1614,13 +1623,32 @@ class MonitoringController extends ChangeNotifier {
         _alertViaAlarm &&
         hasSevereOpenAlert &&
         !_alarmSilencedByUser;
+    final shouldStayLatched =
+        _alarmLatchedActive &&
+        _notificationsEnabled &&
+        _alertViaAlarm &&
+        !_alarmSilencedByUser;
+
+    if (shouldPlay) {
+      _latchedFallPatientIds.addAll(
+        severeOpenAlerts.map((alert) => alert.patientId.trim()),
+      );
+    }
 
     if (shouldPlay && !_alarmPlaying) {
+      _alarmLatchedActive = true;
       _startAlarmOnce();
       return;
     }
 
-    if (!shouldPlay) {
+    if (shouldStayLatched) {
+      if (!_alarmPlaying) {
+        _startAlarmOnce();
+      }
+      return;
+    }
+
+    if (!shouldPlay && !shouldStayLatched) {
       _stopAlarmIfPlaying();
     }
   }
@@ -1677,11 +1705,13 @@ class MonitoringController extends ChangeNotifier {
 
   Future<void> clearActiveAlarm() async {
     _alarmSilencedByUser = true;
+    _alarmLatchedActive = false;
     _alarmSilencedAt = DateTime.now();
     _silencedSevereAlertIds = _caregiverAlerts
         .where(_isAlarmEligibleAlert)
         .map((alert) => alert.id)
         .toSet();
+    _latchedFallPatientIds = <String>{};
     _stopAlarmIfPlaying();
     _statusMessage = 'Alarm cleared.';
     notifyListeners();

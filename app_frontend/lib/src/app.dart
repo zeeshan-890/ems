@@ -50,6 +50,13 @@ class _ElderlyMonitorAppState extends State<ElderlyMonitorApp> {
           brightness: Brightness.light,
         ),
       ),
+      builder: (context, child) {
+        final media = MediaQuery.of(context);
+        return MediaQuery(
+          data: media.copyWith(textScaler: const TextScaler.linear(0.92)),
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
       home: FutureBuilder<void>(
         future: _initializationFuture,
         builder: (context, snapshot) {
@@ -90,7 +97,12 @@ class _FallAwarePatientHomeState extends State<FallAwarePatientHome> {
     if (!context.mounted) {
       return;
     }
-    runApp(ElderlyMonitorApp(controller: c));
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute<void>(
+        builder: (_) => ElderlyMonitorApp(controller: c),
+      ),
+      (_) => false,
+    );
   }
 
   @override
@@ -863,9 +875,14 @@ class CaregiverDashboard extends StatelessWidget {
     final worst = _worstLiveAmong(controller, patients);
     final fallback = controller.liveStatus;
     final overviewLive = worst ?? (patients.length <= 1 ? fallback : null);
-    final overviewSeverity = overviewLive?.severity ?? 'low';
-    final overviewText =
-        overviewLive?.lastMessage ??
+    final latchedAny = controller.hasLatchedFall;
+    final overviewSeverity = latchedAny
+        ? 'fall_detected'
+        : (overviewLive?.severity ?? 'low');
+    final overviewText = latchedAny
+        ? 'Fall detected. Alarm state is latched until caregiver clears alarm.'
+        :
+        _cleanDetectionMessage(overviewLive?.lastMessage) ??
         (patients.isEmpty
             ? 'Enroll one patient from the Enrollment tab. They sign in on their own device.'
             : 'When your patient signs in on their device, live status appears here.');
@@ -889,10 +906,15 @@ class CaregiverDashboard extends StatelessWidget {
 
     if (patients.isEmpty) {
       final live = controller.liveStatus;
-      final severity = live?.severity ?? 'low';
+      final isLatched =
+          controller.patientId != null &&
+          controller.isPatientFallLatched(controller.patientId!);
+      final severity = isLatched ? 'fall_detected' : (live?.severity ?? 'low');
       final risk = ((live?.score ?? controller.lastDetection?.score ?? 0) * 100)
           .round();
-      final statusText = live?.lastMessage ?? 'No live data yet.';
+      final statusText = isLatched
+          ? 'Fall detected. Alarm state is latched until caregiver clears alarm.'
+          : (_cleanDetectionMessage(live?.lastMessage) ?? 'No live data yet.');
       final movement =
           (controller.lastDetection?.fallProbability ??
               live?.fallProbability ??
@@ -915,6 +937,39 @@ class CaregiverDashboard extends StatelessWidget {
           title: _severityLabel(severity),
           message: statusText,
         ),
+        if (live != null) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: _cardDecoration(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Latest detection',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                Text(statusText, style: const TextStyle(fontSize: 14)),
+                Text(
+                  'Fall probability ${(live.fallProbability * 100).toStringAsFixed(1)}% · score ${live.score.toStringAsFixed(2)}',
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF5D7385)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: _cardDecoration(),
+            child: Text(
+              _liveSummaryLine(live),
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         Row(
           children: [
@@ -947,10 +1002,13 @@ class CaregiverDashboard extends StatelessWidget {
     } else {
       for (final p in patients) {
         final live = controller.liveStatusForPatient(p.id);
-        final severity = live?.severity ?? 'low';
+        final isLatched = controller.isPatientFallLatched(p.id);
+        final severity = isLatched ? 'fall_detected' : (live?.severity ?? 'low');
         final risk = ((live?.score ?? 0) * 100).round();
-        final statusText =
-            live?.lastMessage ??
+        final statusText = isLatched
+            ? 'Fall detected. Alarm state is latched until caregiver clears alarm.'
+            :
+            _cleanDetectionMessage(live?.lastMessage) ??
             'No live data yet. Patient can sign in with generated credentials.';
         final movement = (live?.fallProbability ?? 0) * 100;
         final ageLabel = p.age == null ? 'Age not set' : '${p.age} years';
@@ -977,6 +1035,39 @@ class CaregiverDashboard extends StatelessWidget {
             title: '${p.fullName} · ${_severityLabel(severity)}',
             message: statusText,
           ),
+          if (live != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: _cardDecoration(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Latest detection',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(statusText, style: const TextStyle(fontSize: 14)),
+                  Text(
+                    'Fall probability ${(live.fallProbability * 100).toStringAsFixed(1)}% · score ${live.score.toStringAsFixed(2)}',
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF5D7385)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: _cardDecoration(),
+              child: Text(
+                _liveSummaryLine(live),
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           Row(
             children: [
@@ -1111,8 +1202,44 @@ class LiveMonitoringScreen extends StatelessWidget {
         _StatusBanner(
           color: _severityColor(severity),
           title: 'Live Status: ${_severityLabel(severity)}',
-          message: live?.lastMessage ?? 'Monitoring active.',
+          message: _cleanDetectionMessage(live?.lastMessage) ?? 'Monitoring active.',
         ),
+        if (live != null) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: _cardDecoration(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Latest detection',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _cleanDetectionMessage(live.lastMessage) ?? live.lastMessage,
+                  style: const TextStyle(fontSize: 14),
+                ),
+                Text(
+                  'Fall probability ${(live.fallProbability * 100).toStringAsFixed(1)}% · score ${live.score.toStringAsFixed(2)}',
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF5D7385)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: _cardDecoration(),
+            child: Text(
+              _liveSummaryLine(live),
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         const _WavePulseCard(),
         const SizedBox(height: 16),
@@ -1146,7 +1273,7 @@ class LiveMonitoringScreen extends StatelessWidget {
         ),
         _TimelineItem(
           label: _formatDateTime(DateTime.now()),
-          text: live?.lastMessage ?? 'No abnormal movement',
+          text: _cleanDetectionMessage(live?.lastMessage) ?? 'No abnormal movement',
         ),
       ],
     );
@@ -2293,6 +2420,31 @@ String _stabilityText(double riskValue) {
   if (riskValue > 0.75) return 'Unstable';
   if (riskValue > 0.45) return 'Observe closely';
   return 'Stable';
+}
+
+String? _cleanDetectionMessage(String? message) {
+  if (message == null) return null;
+  final raw = message.trim();
+  if (raw.isEmpty) return null;
+  final idx = raw.toLowerCase().indexOf('activity hint:');
+  if (idx <= 0) {
+    return raw;
+  }
+  return raw.substring(0, idx).trim();
+}
+
+String _liveSummaryLine(LiveStatusModel live) {
+  final p = (live.fallProbability * 100).toStringAsFixed(1);
+  if (live.severity == 'fall_detected') {
+    final act = (live.predictedActivityClass ?? '').trim();
+    if (act.isNotEmpty) {
+      return 'Fall detected ($p%): $act';
+    }
+    return 'Fall detected ($p%)';
+  }
+  final act = (live.predictedActivityClass ?? '').trim();
+  final label = act.isEmpty ? 'ADL' : act;
+  return 'No fall ($p%): $label';
 }
 
 double _distanceKm(double lat1, double lon1, double lat2, double lon2) {

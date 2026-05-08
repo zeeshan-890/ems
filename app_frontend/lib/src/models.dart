@@ -111,12 +111,11 @@ String? _simplifyActivityLabel(String? label) {
   if (lower.contains('lying')) return 'Lying';
 
   // Group uncommon navigation variants into walking.
+  if (lower.contains('car step in')) return 'Sitting';
   if (lower.contains('stairs') || lower.contains('car step')) return 'Walking';
 
-  // Transitional postures are valid ADLs; don't force them into standing.
-  if (lower.contains('sit to stand') || lower.contains('stand to sit')) {
-    return 'Transition';
-  }
+  if (lower.contains('sit to stand')) return 'Standing';
+  if (lower.contains('stand to sit')) return 'Sitting';
 
   if (lower.contains('jump')) return 'Active movement';
 
