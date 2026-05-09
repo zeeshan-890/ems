@@ -40,6 +40,20 @@ def _fall_type_vector_from_windows(
     return extract_fall_type_raw_vector(acc_window, gyro_window, ori_window)
 
 
+def _sanitize_features(arr: np.ndarray) -> np.ndarray:
+    x = np.asarray(arr, dtype=np.float64)
+    return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _binary_positive_class_probability(proba: np.ndarray) -> float:
+    """Fall probability = sklearn ``predict_proba`` column for positive class (binary)."""
+    row = np.asarray(proba, dtype=np.float64).reshape(-1)
+    row = np.nan_to_num(row, nan=0.0, posinf=0.0, neginf=0.0)
+    if row.size >= 2:
+        return float(min(1.0, max(0.0, row[1])))
+    return float(min(1.0, max(0.0, row[0])))
+
+
 @dataclass(frozen=True)
 class InferenceArtifacts:
     manifest: dict[str, Any]
@@ -165,12 +179,12 @@ def run_inference(
             )
             return model.predict_proba(values)
 
-    x = np.asarray(enhanced_features, dtype=np.float64).reshape(1, -1)
+    x = _sanitize_features(np.asarray(enhanced_features, dtype=np.float64).reshape(1, -1))
     if x.shape[1] != art.enhanced_dim:
         raise ValueError(f"enhanced_features length {x.shape[1]} != {art.enhanced_dim}")
 
     if fall_type_features is not None:
-        ft_chk = np.asarray(fall_type_features, dtype=np.float64).reshape(1, -1)
+        ft_chk = _sanitize_features(np.asarray(fall_type_features, dtype=np.float64).reshape(1, -1))
         if ft_chk.shape[1] != art.fall_type_dim:
             raise ValueError(f"fall_type_features length {ft_chk.shape[1]} != {art.fall_type_dim}")
 
@@ -193,7 +207,7 @@ def run_inference(
         }
 
     xf = art.fall_scaler.transform(x)
-    p_fall = float(_predict_proba_safely(art.fall_model, xf)[0, 1])
+    p_fall = _binary_positive_class_probability(_predict_proba_safely(art.fall_model, xf)[0])
     is_fall = p_fall >= art.fall_threshold
 
     out: dict[str, Any] = {

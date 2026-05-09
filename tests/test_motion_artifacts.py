@@ -84,6 +84,17 @@ def test_run_inference_adl_branch_returns_label(artifacts: InferenceArtifacts) -
         assert out["is_fall"] is True
 
 
+def test_run_inference_tolerates_nan_inf_features(artifacts: InferenceArtifacts) -> None:
+    """Sanitized vectors must not crash RobustScaler / XGBoost (phone noise edge cases)."""
+    feats = [0.0] * artifacts.enhanced_dim
+    feats[10] = float("nan")
+    feats[20] = float("inf")
+    out = run_inference(artifacts, feats, None, predict_fall_type=False)
+    pf = float(out["fall_probability"])
+    assert pf == pf  # finite
+    assert 0.0 <= pf <= 1.0
+
+
 def test_run_inference_full_vectors_fall_type_when_fall(artifacts: InferenceArtifacts) -> None:
     """Zeros + full fall-type vector; if binary fall branch, type label must be a known class."""
     z = [0.0] * artifacts.enhanced_dim

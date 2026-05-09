@@ -44,7 +44,9 @@ def extract_enhanced_features(
 
         features.append(feat)
 
-    return np.asarray(features, dtype=np.float64)
+    out = np.asarray(features, dtype=np.float64)
+    # Match training export: finite features only (avoids scaler/XGBoost failures on NaN/inf).
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _time_domain_features(data: np.ndarray) -> list[float]:

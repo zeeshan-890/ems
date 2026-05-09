@@ -19,6 +19,29 @@ MEDIUM = {
 FALL_MIN_PEAK_ACC_G = 1.70
 FALL_MIN_PEAK_GYRO_DPS = 180.0
 
+# When ML outputs high fall prob but IMU looks like quiet stance (domain shift / pocket noise),
+# dampen probability used for severity + risk score — does not apply if gyro or acceleration
+# clearly shows locomotion or impact-sized peaks.
+_STATIONARY_GYRO_PEAK_DPS = 95.0
+_STATIONARY_PEAK_ACC_G = 2.05
+_STATIONARY_STILLNESS_MIN = 0.62
+
+
+def _effective_fall_probability(p: float, sig: dict[str, float]) -> tuple[float, bool]:
+    """Blend down inflated ML fall prob when the batch looks physically stationary."""
+    if p <= 0.35:
+        return p, False
+    looks_stationary = (
+        sig["peak_gyro_dps"] < _STATIONARY_GYRO_PEAK_DPS
+        and sig["peak_acc_g"] < _STATIONARY_PEAK_ACC_G
+        and sig["stillness"] >= _STATIONARY_STILLNESS_MIN
+    )
+    if not looks_stationary:
+        return p, False
+    # Soft cap: standing / holding phone still should not sit at ~70% risk from ML alone.
+    dampened = min(p, 0.14 + p * 0.22)
+    return dampened, True
+
 
 def _severity_from_fall_prob(p: float, thr: float) -> str:
     if p >= thr:
@@ -76,7 +99,8 @@ def build_detection_payload(
     threshold: float,
 ) -> dict[str, Any]:
     sig = simple_signal_metrics(samples)
-    severity = _severity_from_fall_prob(fall_probability, threshold)
+    p_eff, stationary_guard = _effective_fall_probability(fall_probability, sig)
+    severity = _severity_from_fall_prob(p_eff, threshold)
     if severity == "fall_detected":
         has_impact_evidence = (
             sig["peak_acc_g"] >= FALL_MIN_PEAK_ACC_G
@@ -85,28 +109,32 @@ def build_detection_payload(
         if not has_impact_evidence:
             # Keep elevated risk visible, but suppress hard fall alert.
             severity = "high_risk"
-    score = max(fall_probability, sig["peak_acc_g"] / 5.0 * 0.3 + fall_probability * 0.7)
+    score = max(p_eff, sig["peak_acc_g"] / 5.0 * 0.3 + p_eff * 0.7)
     reasons = []
     if ml_ok:
         reasons.append("ml_stack")
     else:
         reasons.append("heuristic_fallback")
+    if stationary_guard:
+        reasons.append("stationary_motion_guard")
     if sig["peak_acc_g"] > 2.5:
         reasons.append("high_peak_acceleration")
     if (
-        fall_probability >= threshold
+        p_eff >= threshold
         and sig["peak_acc_g"] < FALL_MIN_PEAK_ACC_G
         and sig["peak_gyro_dps"] < FALL_MIN_PEAK_GYRO_DPS
     ):
         reasons.append("fall_suppressed_low_impact_motion")
     msg = (
-        f"Fall risk {fall_probability:.2f} ({severity}). "
+        f"Fall risk {p_eff:.2f} ({severity}). "
         + (f"Activity hint: {inferred_activity}" if inferred_activity else "")
     ).strip()
     return {
         "severity": severity,
         "score": min(1.0, float(score)),
-        "fall_probability": float(fall_probability),
+        # UX / alerts: use calibrated prob; raw ML available as fall_probability_ml when needed.
+        "fall_probability": float(p_eff),
+        "fall_probability_ml": float(fall_probability),
         "predicted_activity_class": inferred_activity,
         "frailty_proxy_score": None,
         "gait_stability_score": None,
