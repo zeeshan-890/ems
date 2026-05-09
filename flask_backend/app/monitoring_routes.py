@@ -96,6 +96,21 @@ def _humanize_activity_label(raw_label: Any) -> str | None:
     return _ADL_CODE_TO_NAME.get(code, code)
 
 
+def _preview_vector(values: list[float], limit: int = 8) -> str:
+    head = values[:limit]
+    return ", ".join(f"{v:.4f}" for v in head)
+
+
+def _preview_rows(rows: list[list[float]], limit: int = 2) -> str:
+    if not rows:
+        return "[]"
+    picked = rows[:limit]
+    chunks = []
+    for r in picked:
+        chunks.append("[" + ", ".join(f"{v:.4f}" for v in r[:3]) + "]")
+    return "[" + ", ".join(chunks) + (" ...]" if len(rows) > limit else "]")
+
+
 def _is_alarm_eligible_alert(
     *,
     severity: str | None,
@@ -798,6 +813,22 @@ def ingest_live(body: IngestLiveBody):
     samples_dict = [s.model_dump(exclude_none=True) for s in body.samples]
     feat_vec, acc300, gyro300, ori300 = samples_to_feature_vector(samples_dict)
     acc_w, gyro_w, ori_w = acc_gyro_ori_to_window_lists(acc300, gyro300, ori300)
+    logger.info(
+        "[ingest/live] sensors patient_id=%s session_id=%s raw_samples=%d acc300=%s gyro300=%s ori300=%s",
+        body.patient_id,
+        body.session_id,
+        len(samples_dict),
+        _preview_rows(acc_w),
+        _preview_rows(gyro_w),
+        _preview_rows(ori_w),
+    )
+    logger.info(
+        "[ingest/live] features patient_id=%s session_id=%s dim=%d head=[%s]",
+        body.patient_id,
+        body.session_id,
+        len(feat_vec),
+        _preview_vector(feat_vec.tolist()),
+    )
 
     inferred_activity: str | None = None
     ml_ok = False
