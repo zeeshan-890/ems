@@ -40,24 +40,31 @@ class MotionInferenceHelper {
         'Enhanced features length ${features.length} does not match expected $dim.',
       );
     }
-    final sendWindows =
-        predictFallType && fallTypeFeatures == null;
+    // Raw windows: server rebuilds 128-D features with NumPy FFT when fall-type artifacts are off (128 rows),
+    // or 300 rows when fall-type path needs Colab 263-D features.
+    final sendFallTypeWindows = predictFallType && fallTypeFeatures == null;
     if (_enableInferenceDebugLogs) {
       debugPrint(
         '[MotionInference] Model input: '
         'enhancedDim=${features.length}, '
         'predictFallType=$predictFallType, '
         'fallTypeFeaturesDim=${fallTypeFeatures?.length ?? 0}, '
-        'sendAccGyroOriWindows=$sendWindows',
+        'rawWindowRows=${sendFallTypeWindows ? MotionFeatureExtractor.fallTypeWindowLength : MotionFeatureExtractor.windowLength}',
       );
     }
     final raw = await client.inferMotion(
       enhancedFeatures: features,
       fallTypeFeatures: fallTypeFeatures,
       predictFallType: predictFallType,
-      accWindow: sendWindows ? MotionFeatureExtractor.accMatrix300(samples) : null,
-      gyroWindow: sendWindows ? MotionFeatureExtractor.gyroMatrix300(samples) : null,
-      oriWindow: sendWindows ? MotionFeatureExtractor.oriMatrix300(samples) : null,
+      accWindow: sendFallTypeWindows
+          ? MotionFeatureExtractor.accMatrix300(samples)
+          : MotionFeatureExtractor.accMatrix128(samples),
+      gyroWindow: sendFallTypeWindows
+          ? MotionFeatureExtractor.gyroMatrix300(samples)
+          : MotionFeatureExtractor.gyroMatrix128(samples),
+      oriWindow: sendFallTypeWindows
+          ? MotionFeatureExtractor.oriMatrix300(samples)
+          : MotionFeatureExtractor.oriMatrix128(samples),
     );
     final parsed = MotionInferenceResponseModel.fromJson(raw);
     if (_enableInferenceDebugLogs) {

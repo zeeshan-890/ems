@@ -24,8 +24,11 @@ from flask_backend.app.elder_credential_allocator import (
     temporary_password_for_patient,
 )
 from flask_backend.app.detector_state import build_detection_payload
-from flask_backend.app.ml_bridge import acc_gyro_ori_to_window_lists, samples_to_feature_vector
-from flask_backend.app.motion_enhanced_features import extract_enhanced_features
+from flask_backend.app.ml_bridge import (
+    acc_gyro_ori_to_window_lists,
+    build_enhanced_features_numpy,
+    samples_to_feature_vector,
+)
 from flask_backend.app.schemas_fall_feedback import FallFeedbackAck, FallFeedbackEvent
 from flask_backend.app.schemas_motion import MotionInferenceRequest, MotionInferenceResponse
 from flask_backend.app.services.motion_xgb_service import InferenceArtifacts, run_inference
@@ -1630,10 +1633,23 @@ def inference_motion(body: MotionInferenceRequest):
     if art is None:
         err = _RUNTIME.get("load_error", "not loaded")
         raise HTTPException(503, detail=f"Inference not loaded: {err}")
+
+    # Prefer NumPy/training-parity 128-D features when raw windows are supplied (phone FFT ≠ np.fft.rfft).
+    enhanced_in = list(body.enhanced_features)
+    if body.acc_window is not None:
+        acc = np.asarray(body.acc_window, dtype=np.float64)
+        gyro = np.asarray(body.gyro_window, dtype=np.float64) if body.gyro_window is not None else None
+        ori = np.asarray(body.ori_window, dtype=np.float64) if body.ori_window is not None else None
+        enhanced_in = build_enhanced_features_numpy(acc, gyro, ori).tolist()
+        logger.info(
+            "[inference/motion] server-built 128-D features from raw windows (rows=%s)",
+            acc.shape[0],
+        )
+
     try:
         raw = run_inference(
             art,
-            body.enhanced_features,
+            enhanced_in,
             body.fall_type_features,
             predict_fall_type=body.predict_fall_type,
             acc_window=body.acc_window,
@@ -1649,20 +1665,9 @@ def inference_motion(body: MotionInferenceRequest):
         if "enhanced_features length" in msg and body.acc_window is not None:
             try:
                 acc = np.asarray(body.acc_window, dtype=np.float64)
-                if body.gyro_window is not None:
-                    gyro = np.asarray(body.gyro_window, dtype=np.float64)
-                else:
-                    gyro = np.zeros_like(acc, dtype=np.float64)
-                if body.ori_window is not None:
-                    ori = np.asarray(body.ori_window, dtype=np.float64)
-                else:
-                    ori = np.zeros_like(acc, dtype=np.float64)
-
-                rebuilt = extract_enhanced_features(
-                    acc[np.newaxis, ...],
-                    gyro[np.newaxis, ...],
-                    ori[np.newaxis, ...],
-                )[0].tolist()
+                gyro = np.asarray(body.gyro_window, dtype=np.float64) if body.gyro_window is not None else None
+                ori = np.asarray(body.ori_window, dtype=np.float64) if body.ori_window is not None else None
+                rebuilt = build_enhanced_features_numpy(acc, gyro, ori).tolist()
                 logger.warning(
                     "[inference/motion] rebuilt enhanced features from windows due to mismatch: %s",
                     msg,

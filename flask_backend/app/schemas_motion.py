@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MotionInferenceRequest(BaseModel):
@@ -10,7 +10,8 @@ class MotionInferenceRequest(BaseModel):
 
     enhanced_features: list[float] = Field(
         ...,
-        description="Length = inference_manifest enhanced_feature_dim (128 after retraining with MobiAct feature set).",
+        description="128-D hand-crafted vector (legacy clients). When acc_window is sent (128 or 300 rows), "
+        "the server rebuilds features with NumPy FFT / training parity and ignores this field.",
     )
     fall_type_features: list[float] | None = Field(
         default=None,
@@ -19,16 +20,16 @@ class MotionInferenceRequest(BaseModel):
     predict_fall_type: bool = Field(default=True)
     acc_window: list[list[float]] | None = Field(
         default=None,
-        description="Optional 300×3 accelerometer window (m/s²). If fall is predicted and fall_type_features "
-        "are omitted, the server builds 263-D fall-type features from acc/gyro/ori windows.",
+        description="Optional accelerometer (m/s²): 128×3 for training-parity server features, or 300×3 for "
+        "fall-type 263-D extraction when fall_type artifacts are enabled.",
     )
     gyro_window: list[list[float]] | None = Field(
         default=None,
-        description="Optional 300×3 gyroscope (rad/s). Defaults to zeros if null.",
+        description="Optional gyroscope (rad/s). Same row count as acc_window when present; zeros if null.",
     )
     ori_window: list[list[float]] | None = Field(
         default=None,
-        description="Optional 300×3 orientation (azimuth, pitch, roll). Defaults to zeros if null.",
+        description="Optional orientation degrees (azimuth, pitch, roll). Same row count as acc_window; zeros if null.",
     )
 
     @field_validator("acc_window", "gyro_window", "ori_window")
@@ -39,12 +40,23 @@ class MotionInferenceRequest(BaseModel):
     ) -> list[list[float]] | None:
         if v is None:
             return None
-        if len(v) != 300:
-            raise ValueError("sensor window must have exactly 300 rows")
+        n = len(v)
+        if n not in (128, 300):
+            raise ValueError("sensor window must have 128 or 300 rows")
         for i, row in enumerate(v):
             if len(row) != 3:
                 raise ValueError(f"sensor row {i} must have 3 columns (x,y,z)")
         return v
+
+    @model_validator(mode="after")
+    def _sensor_windows_same_length(self) -> MotionInferenceRequest:
+        lengths: list[int] = []
+        for w in (self.acc_window, self.gyro_window, self.ori_window):
+            if w is not None:
+                lengths.append(len(w))
+        if len(set(lengths)) > 1:
+            raise ValueError("acc_window, gyro_window, ori_window must have the same row count when provided")
+        return self
 
 
 class MotionInferenceResponse(BaseModel):

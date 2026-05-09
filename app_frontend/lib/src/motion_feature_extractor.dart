@@ -65,7 +65,19 @@ class MotionFeatureExtractor {
     return feat;
   }
 
-  /// **300×3** rows for `POST /api/v1/inference/motion` `acc_window` / `gyro_window` (server fall-type path).
+  /// **128×3** rows — send with inference so the server can rebuild 128-D features with NumPy FFT (training parity).
+  static List<List<double>> accMatrix128(List<SensorReadingPayload> samples) =>
+      _sensorMatrix(samples, _accTriplets, windowLength);
+
+  /// Gyro columns for the same API (rad/s).
+  static List<List<double>> gyroMatrix128(List<SensorReadingPayload> samples) =>
+      _sensorMatrix(samples, _gyroTriplets, windowLength);
+
+  /// Orientation (degrees) aligned with [accMatrix128].
+  static List<List<double>> oriMatrix128(List<SensorReadingPayload> samples) =>
+      _sensorMatrix(samples, _oriTriplets, windowLength);
+
+  /// **300×3** rows for `POST /api/v1/inference/motion` when fall-type features are built server-side.
   static List<List<double>> accMatrix300(List<SensorReadingPayload> samples) =>
       _sensorMatrix(samples, _accTriplets, fallTypeWindowLength);
 
