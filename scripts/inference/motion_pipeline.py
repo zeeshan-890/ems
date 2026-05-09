@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,17 @@ def run_inference(
     gyro_window: list[list[float]] | None = None,
     ori_window: list[list[float]] | None = None,
 ) -> dict[str, Any]:
+    def _predict_proba_safely(model: Any, values: np.ndarray) -> np.ndarray:
+        # LightGBM/sklearn can warn when model was fit with feature names but runtime
+        # sends plain ndarray. This inference path intentionally sends arrays.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="X does not have valid feature names, but LGBMClassifier was fitted with feature names",
+                category=UserWarning,
+            )
+            return model.predict_proba(values)
+
     x = np.asarray(enhanced_features, dtype=np.float64).reshape(1, -1)
     if x.shape[1] != art.enhanced_dim:
         raise ValueError(f"enhanced_features length {x.shape[1]} != {art.enhanced_dim}")
@@ -165,7 +177,7 @@ def run_inference(
         }
 
     xf = art.fall_scaler.transform(x)
-    p_fall = float(art.fall_model.predict_proba(xf)[0, 1])
+    p_fall = float(_predict_proba_safely(art.fall_model, xf)[0, 1])
     is_fall = p_fall >= art.fall_threshold
 
     out: dict[str, Any] = {
