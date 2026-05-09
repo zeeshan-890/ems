@@ -25,6 +25,7 @@ from flask_backend.app.elder_credential_allocator import (
 )
 from flask_backend.app.detector_state import build_detection_payload
 from flask_backend.app.ml_bridge import acc_gyro_ori_to_window_lists, samples_to_feature_vector
+from flask_backend.app.motion_enhanced_features import extract_enhanced_features
 from flask_backend.app.schemas_fall_feedback import FallFeedbackAck, FallFeedbackEvent
 from flask_backend.app.schemas_motion import MotionInferenceRequest, MotionInferenceResponse
 from flask_backend.app.services.motion_xgb_service import InferenceArtifacts, run_inference
@@ -38,6 +39,12 @@ DETECTOR_CFG = {
     "medium_risk_score": 0.35,
     "high_risk_score": 0.58,
     "fall_score": 0.80,
+}
+DEBUG_SENSOR_LOGS = os.environ.get("EMS_DEBUG_SENSOR_LOGS", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
 }
 
 # MobiAct ADL codebook used by training data loaders.
@@ -813,22 +820,24 @@ def ingest_live(body: IngestLiveBody):
     samples_dict = [s.model_dump(exclude_none=True) for s in body.samples]
     feat_vec, acc300, gyro300, ori300 = samples_to_feature_vector(samples_dict)
     acc_w, gyro_w, ori_w = acc_gyro_ori_to_window_lists(acc300, gyro300, ori300)
-    logger.info(
-        "[ingest/live] sensors patient_id=%s session_id=%s raw_samples=%d acc300=%s gyro300=%s ori300=%s",
-        body.patient_id,
-        body.session_id,
-        len(samples_dict),
-        _preview_rows(acc_w),
-        _preview_rows(gyro_w),
-        _preview_rows(ori_w),
-    )
-    logger.info(
-        "[ingest/live] features patient_id=%s session_id=%s dim=%d head=[%s]",
-        body.patient_id,
-        body.session_id,
-        len(feat_vec),
-        _preview_vector(feat_vec.tolist()),
-    )
+    if DEBUG_SENSOR_LOGS:
+        # Use warning level so logs are visible even when app logger INFO is filtered.
+        logger.warning(
+            "[ingest/live] sensors patient_id=%s session_id=%s raw_samples=%d acc300=%s gyro300=%s ori300=%s",
+            body.patient_id,
+            body.session_id,
+            len(samples_dict),
+            _preview_rows(acc_w),
+            _preview_rows(gyro_w),
+            _preview_rows(ori_w),
+        )
+        logger.warning(
+            "[ingest/live] features patient_id=%s session_id=%s dim=%d head=[%s]",
+            body.patient_id,
+            body.session_id,
+            len(feat_vec),
+            _preview_vector(feat_vec.tolist()),
+        )
 
     inferred_activity: str | None = None
     ml_ok = False
@@ -1609,4 +1618,46 @@ def inference_motion(body: MotionInferenceRequest):
         )
         return MotionInferenceResponse(**raw)
     except ValueError as e:
+        msg = str(e)
+        # Backward compatibility:
+        # Older app builds may still send 116-D enhanced_features while server expects 128-D.
+        # If raw windows are present, rebuild enhanced features server-side and retry.
+        if "enhanced_features length" in msg and body.acc_window is not None:
+            try:
+                acc = np.asarray(body.acc_window, dtype=np.float64)
+                if body.gyro_window is not None:
+                    gyro = np.asarray(body.gyro_window, dtype=np.float64)
+                else:
+                    gyro = np.zeros_like(acc, dtype=np.float64)
+                if body.ori_window is not None:
+                    ori = np.asarray(body.ori_window, dtype=np.float64)
+                else:
+                    ori = np.zeros_like(acc, dtype=np.float64)
+
+                rebuilt = extract_enhanced_features(
+                    acc[np.newaxis, ...],
+                    gyro[np.newaxis, ...],
+                    ori[np.newaxis, ...],
+                )[0].tolist()
+                logger.warning(
+                    "[inference/motion] rebuilt enhanced features from windows due to mismatch: %s",
+                    msg,
+                )
+                raw = run_inference(
+                    art,
+                    rebuilt,
+                    body.fall_type_features,
+                    predict_fall_type=body.predict_fall_type,
+                    acc_window=body.acc_window,
+                    gyro_window=body.gyro_window,
+                    ori_window=body.ori_window,
+                )
+                return MotionInferenceResponse(**raw)
+            except Exception as rebuild_exc:
+                logger.warning(
+                    "[inference/motion] fallback rebuild failed: %s",
+                    rebuild_exc,
+                    exc_info=True,
+                )
+        logger.warning("[inference/motion] request rejected: %s", msg)
         raise HTTPException(422, detail=str(e)) from e
