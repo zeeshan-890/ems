@@ -25,6 +25,7 @@ from flask_backend.app.elder_credential_allocator import (
 )
 from flask_backend.app.detector_state import build_detection_payload
 from flask_backend.app.ml_bridge import (
+    VoteBuffer,
     acc_gyro_ori_to_window_lists,
     build_enhanced_features_numpy,
     samples_to_feature_vector,
@@ -210,6 +211,9 @@ router = APIRouter()
 
 # Set by ``main.py`` lifespan — avoids circular imports.
 _RUNTIME: dict[str, Any] = {}
+
+# Per-patient sliding-window ADL vote buffer (falls bypass and reset the buffer).
+_patient_vote_buffers: dict[str, VoteBuffer] = {}
 
 
 def set_inference_runtime(state: dict[str, Any]) -> None:
@@ -831,7 +835,7 @@ def stop_session(session_id: str, body: SessionStopBody):
 
 
 @router.post("/api/v1/ingest/live")
-def ingest_live(body: IngestLiveBody):
+def ingest_live(body: IngestLiveBody, background_tasks: BackgroundTasks):
     init_schema()
     art = _get_art()
     # Use live detector config so caregiver sensitivity slider affects ingest behavior.
@@ -882,9 +886,17 @@ def ingest_live(body: IngestLiveBody):
             )
             p_fall = float(raw["fall_probability"])
             branch = str(raw.get("branch", ""))
+            is_fall_ml = bool(raw.get("is_fall", False))
             if raw.get("branch") == "adl":
-                inferred_activity = _humanize_activity_label(raw.get("activity_label"))
+                raw_activity = _humanize_activity_label(raw.get("activity_label"))
+                # Smooth ADL label with per-patient majority-vote buffer.
+                buf = _patient_vote_buffers.setdefault(body.patient_id, VoteBuffer())
+                inferred_activity = buf.push(raw_activity or "unknown", is_fall=False) if raw_activity else None
             elif raw.get("branch") == "fall":
+                # Falls bypass voting and reset the buffer for this patient.
+                buf = _patient_vote_buffers.get(body.patient_id)
+                if buf is not None:
+                    buf.reset()
                 inferred_activity = _humanize_fall_type_label(
                     raw.get("fall_type_label") or raw.get("fall_type_code")
                 ) or "Fall"
@@ -1011,6 +1023,9 @@ def ingest_live(body: IngestLiveBody):
                         json.dumps({"branch": branch, "ml_ok": ml_ok}),
                     ),
                 )
+                # Push to caregiver WebSocket immediately (same path as manual alerts).
+                cg = _caregiver_id_for_patient(body.patient_id)
+                background_tasks.add_task(_broadcast_alert_ws, cg, active_alert)
 
         c.execute("SELECT id FROM alerts WHERE patient_id = ? AND status = 'open'", (body.patient_id,))
         alert_ids = [r[0] for r in c.fetchall()]
