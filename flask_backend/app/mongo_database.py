@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -16,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 _client: Any | None = None
 _db: Any | None = None
+_schema_lock = threading.Lock()
+_schema_initialized = False
 
 TABLES = (
     "users",
@@ -86,39 +89,46 @@ def get_mongo_db() -> Any:
 
 
 def init_mongo_schema() -> None:
-    db = get_mongo_db()
-    db.users.update_many({"email": None}, {"$unset": {"email": ""}})
-    db.users.update_many({"username": None}, {"$unset": {"username": ""}})
-    for index_name in ("email_1", "username_1"):
-        try:
-            db.users.drop_index(index_name)
-        except Exception:
-            pass
-    db.users.create_index(
-        "email",
-        unique=True,
-        partialFilterExpression={"email": {"$type": "string"}},
-    )
-    db.users.create_index(
-        "username",
-        unique=True,
-        partialFilterExpression={"username": {"$type": "string"}},
-    )
-    db.users.create_index("role")
-    db.patients.create_index("caregiver_id")
-    db.patients.create_index("elder_user_id")
-    db.caregiver_patient.create_index(
-        [("caregiver_id", 1), ("patient_id", 1)], unique=True
-    )
-    db.caregiver_patient.create_index("patient_id")
-    db.devices.create_index("patient_id")
-    db.sessions.create_index("patient_id")
-    db.sessions.create_index("status")
-    db.alerts.create_index([("patient_id", 1), ("status", 1)])
-    db.alerts.create_index("created_at")
-    db.fall_incidents.create_index([("patient_id", 1), ("stage", 1)])
-    db.app_events.create_index("event_type")
-    db.patient_live.create_index("patient_id", unique=True)
+    global _schema_initialized
+    if _schema_initialized:
+        return
+    with _schema_lock:
+        if _schema_initialized:
+            return
+        db = get_mongo_db()
+        db.users.update_many({"email": None}, {"$unset": {"email": ""}})
+        db.users.update_many({"username": None}, {"$unset": {"username": ""}})
+        for index_name in ("email_1", "username_1"):
+            try:
+                db.users.drop_index(index_name)
+            except Exception:
+                pass
+        db.users.create_index(
+            "email",
+            unique=True,
+            partialFilterExpression={"email": {"$type": "string"}},
+        )
+        db.users.create_index(
+            "username",
+            unique=True,
+            partialFilterExpression={"username": {"$type": "string"}},
+        )
+        db.users.create_index("role")
+        db.patients.create_index("caregiver_id")
+        db.patients.create_index("elder_user_id")
+        db.caregiver_patient.create_index(
+            [("caregiver_id", 1), ("patient_id", 1)], unique=True
+        )
+        db.caregiver_patient.create_index("patient_id")
+        db.devices.create_index("patient_id")
+        db.sessions.create_index("patient_id")
+        db.sessions.create_index("status")
+        db.alerts.create_index([("patient_id", 1), ("status", 1)])
+        db.alerts.create_index("created_at")
+        db.fall_incidents.create_index([("patient_id", 1), ("stage", 1)])
+        db.app_events.create_index("event_type")
+        db.patient_live.create_index("patient_id", unique=True)
+        _schema_initialized = True
 
 
 @contextmanager
