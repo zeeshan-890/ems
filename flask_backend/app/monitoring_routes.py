@@ -42,7 +42,7 @@ EMERGENCY_DEADLINE_SEC = int(os.environ.get("FALL_EMERGENCY_DEADLINE_SEC", "90")
 DETECTOR_CFG = {
     "medium_risk_score": 0.35,
     "high_risk_score": 0.58,
-    "fall_score": 0.80,
+    "fall_score": 0.92,
 }
 DEBUG_SENSOR_LOGS = os.environ.get("EMS_DEBUG_SENSOR_LOGS", "1").strip().lower() in {
     "1",
@@ -1714,9 +1714,11 @@ def inference_motion(body: MotionInferenceRequest):
         gyro = np.asarray(body.gyro_window, dtype=np.float64) if body.gyro_window is not None else None
         
         # Apply deadband to flatten micro-tremors (mimics phone resting in pocket)
-        acc = _apply_deadband(acc, 0.2)
+        # Increased to 0.4 to aggressively filter out hand tremors that trick the
+        # model into predicting "Walking"
+        acc = _apply_deadband(acc, 0.4)
         if gyro is not None:
-            gyro = _apply_deadband(gyro, 0.2)
+            gyro = _apply_deadband(gyro, 0.4)
 
         ori = np.asarray(body.ori_window, dtype=np.float64) if body.ori_window is not None else None
         enhanced_in = build_enhanced_features_numpy(acc, gyro, ori).tolist()

@@ -224,10 +224,16 @@ class MonitoringController extends ChangeNotifier {
 
   /// Phase 2: majority-vote smoothed activity label for the patient home screen.
   /// Falls back to the raw inference label when the buffer hasn't converged yet.
-  String? get smoothedActivityLabel =>
-      _smoothedActivityLabel ??
-      _lastMotionInference?.activityLabel ??
-      _lastDetection?.predictedActivityClass;
+  String? get smoothedActivityLabel {
+    // If a fall is detected, bypass the smoothing buffer immediately so the UI
+    // shows the actual fall type (e.g., "Fall (Forward)") instead of the old label.
+    if (_lastMotionInference?.isFall == true || _lastDetection?.severity == 'fall_detected') {
+      return _lastDetection?.predictedActivityClass ?? 'Fall Detected';
+    }
+    return _smoothedActivityLabel ??
+        _lastMotionInference?.activityLabel ??
+        _lastDetection?.predictedActivityClass;
+  }
   AlertRecordModel? get activeAlert => _activeAlert;
   TelemetrySnapshotModel? get latestTelemetry => _latestTelemetry;
 
