@@ -19,7 +19,7 @@ from flask_backend.app.monitoring_routes import router as monitoring_router, set
 from flask_backend.app.services.motion_xgb_service import InferenceArtifacts, load_artifacts
 from flask_backend.app.settings import inference_manifest_path, model_root
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 def _versions() -> dict[str, str]:
