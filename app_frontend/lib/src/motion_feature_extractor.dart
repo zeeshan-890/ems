@@ -15,9 +15,9 @@ class MotionFeatureExtractor {
   /// Build **128** features from one window of sensor readings.
   /// If [samples] has length ≠ 128, values are linearly resampled to 128 per axis.
   ///
-  /// Acceleration channels: uses gravity-removed `filtAccX/Y/Z` when present
+  /// Acceleration channels: uses EMA-smoothed `filtAccX/Y/Z` when present
   /// (set by [SensorStreamingService] Phase 1b) so the feature vectors
-  /// reflect true body motion rather than static gravity. Falls back to raw
+  /// reflect smooth motion rather than noise, while retaining gravity. Falls back to raw
   /// `accX/Y/Z` for samples echoed from the server (filtAcc == null).
   static List<double> extractEnhanced(List<SensorReadingPayload> samples) {
     if (samples.length < 2) {
@@ -26,7 +26,7 @@ class MotionFeatureExtractor {
 
     final n = samples.length;
 
-    // Use gravity-removed linear acc if available (Phase 1b), else raw acc.
+    // Use smoothed total acc if available (Phase 1b), else raw acc.
     final accX = List<double>.generate(
       n,
       (i) => samples[i].filtAccX ?? samples[i].accX,

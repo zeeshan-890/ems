@@ -156,8 +156,8 @@ class MonitoringController extends ChangeNotifier {
   // Collects the last N raw activity labels from the inference endpoint.
   // The displayed label only flips when ≥ threshold of the last N agree,
   // preventing a single noisy window from changing what the user sees.
-  static const int _activityVoteWindowSize = 5;
-  static const int _activityVoteThreshold = 3; // 3-of-5
+  static const int _activityVoteWindowSize = 7;
+  static const int _activityVoteThreshold = 5; // 5-of-7
   final List<String> _activityLabelVotes = <String>[];
   String? _smoothedActivityLabel;
 
@@ -1479,14 +1479,14 @@ class MonitoringController extends ChangeNotifier {
             '${response.detection.message} · ${motion.summaryLine}';
 
         // ── Phase 3: stillness guard ──────────────────────────────────────
-        // If more than 65 % of the window was classified as still by the
+        // If more than 55 % of the window was classified as still by the
         // server, the raw label is unreliable (position adjustment, phone
         // shift). Don't add it to the vote buffer — keep the current
         // smoothed label instead of flip to "Walking" / "Running".
         final stillness = response.detection.stillnessRatio;
         final rawLabel = motion.activityLabel;
 
-        if (rawLabel != null && rawLabel.isNotEmpty && stillness <= 0.65) {
+        if (rawLabel != null && rawLabel.isNotEmpty && stillness <= 0.55) {
           // ── Phase 2: majority-vote smoothing ─────────────────────────────
           _activityLabelVotes.add(rawLabel);
           if (_activityLabelVotes.length > _activityVoteWindowSize) {

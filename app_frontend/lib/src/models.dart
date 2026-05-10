@@ -614,7 +614,7 @@ class SensorReadingPayload {
     this.azimuth,
     this.pitch,
     this.roll,
-    // Gravity-removed, EMA-smoothed linear acc for activity classification.
+    // EMA-smoothed total acc for activity classification.
     // NOT sent to the server — raw acc is used for fall-detection g-spike.
     this.filtAccX,
     this.filtAccY,
@@ -632,7 +632,7 @@ class SensorReadingPayload {
   final double? azimuth;
   final double? pitch;
   final double? roll;
-  /// Gravity-removed, low-pass-filtered linear acceleration (Phase 1b).
+  /// Low-pass-filtered total acceleration (Phase 1b). Includes gravity.
   /// Falls back to raw acc when null (e.g. samples echoed from server).
   final double? filtAccX;
   final double? filtAccY;
