@@ -12,6 +12,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 _client: Any | None = None
 _db: Any | None = None
@@ -47,6 +48,28 @@ def mongo_uri() -> str | None:
 
 def mongo_db_name() -> str:
     return os.environ.get("MONGO_DB_NAME") or os.environ.get("MONGODB_DB") or "ems"
+
+
+def masked_mongo_uri() -> str | None:
+    uri = mongo_uri()
+    if not uri:
+        return None
+    try:
+        parts = urlsplit(uri)
+    except ValueError:
+        return "<invalid mongo uri>"
+    host = parts.hostname or ""
+    netloc = host
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    if parts.username:
+        netloc = f"{parts.username}:***@{netloc}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def ping_mongo() -> None:
+    db = get_mongo_db()
+    db.client.admin.command("ping")
 
 
 def get_mongo_db() -> Any:

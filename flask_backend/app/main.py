@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import logging
 from contextlib import asynccontextmanager
 
 import sklearn
@@ -18,6 +19,8 @@ from flask_backend.app.monitoring_routes import router as monitoring_router, set
 from flask_backend.app.services.motion_xgb_service import InferenceArtifacts, load_artifacts
 from flask_backend.app.settings import inference_manifest_path, model_root
 
+logger = logging.getLogger(__name__)
+
 
 def _versions() -> dict[str, str]:
     return {
@@ -30,12 +33,29 @@ def _versions() -> dict[str, str]:
 _state: dict[str, InferenceArtifacts | str | None] = {"art": None, "load_error": None}
 
 
+def _log_database_startup() -> None:
+    if use_mongo():
+        from flask_backend.app.mongo_database import masked_mongo_uri, mongo_db_name, ping_mongo
+
+        ping_mongo()
+        logger.info(
+            "Database connected: backend=mongo db=%s uri=%s",
+            mongo_db_name(),
+            masked_mongo_uri(),
+        )
+    else:
+        from flask_backend.app.database import get_db_path
+
+        logger.info("Database connected: backend=sqlite path=%s", get_db_path())
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     init_schema()
     seed_default_admin()
+    _log_database_startup()
     try:
         _state["art"] = load_artifacts(inference_manifest_path(), model_root())
         _state["load_error"] = None
