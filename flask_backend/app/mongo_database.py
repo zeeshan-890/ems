@@ -87,8 +87,23 @@ def get_mongo_db() -> Any:
 
 def init_mongo_schema() -> None:
     db = get_mongo_db()
-    db.users.create_index("email", unique=True, sparse=True)
-    db.users.create_index("username", unique=True, sparse=True)
+    db.users.update_many({"email": None}, {"$unset": {"email": ""}})
+    db.users.update_many({"username": None}, {"$unset": {"username": ""}})
+    for index_name in ("email_1", "username_1"):
+        try:
+            db.users.drop_index(index_name)
+        except Exception:
+            pass
+    db.users.create_index(
+        "email",
+        unique=True,
+        partialFilterExpression={"email": {"$type": "string"}},
+    )
+    db.users.create_index(
+        "username",
+        unique=True,
+        partialFilterExpression={"username": {"$type": "string"}},
+    )
     db.users.create_index("role")
     db.patients.create_index("caregiver_id")
     db.patients.create_index("elder_user_id")
@@ -197,6 +212,10 @@ class MongoCursor:
             doc["_id"] = doc["patient_id"]
         elif table == "caregiver_patient":
             doc["_id"] = f"{doc.get('caregiver_id')}:{doc.get('patient_id')}"
+        if table == "users":
+            for optional_unique in ("email", "username"):
+                if doc.get(optional_unique) is None:
+                    doc.pop(optional_unique, None)
 
         try:
             if "insert or ignore into" in q:
