@@ -893,12 +893,6 @@ class CaregiverDashboard extends StatelessWidget {
             style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
           ),
         ),
-      _StatusBanner(
-        color: _severityColor(overviewSeverity),
-        title: patients.isEmpty ? 'Overview' : _severityLabel(overviewSeverity),
-        message: overviewText,
-      ),
-      const SizedBox(height: 12),
     ];
 
     if (patients.isEmpty) {
@@ -909,7 +903,7 @@ class CaregiverDashboard extends StatelessWidget {
       final severity = isLatched ? 'fall_detected' : controller.displaySeverity;
       final risk = (controller.displayRiskScore * 100).round();
       final statusText = isLatched
-          ? 'Fall detected. Alarm state is latched until caregiver clears alarm.'
+          ? '${live?.predictedActivityClass ?? 'Fall'} detected. Alarm state is latched until caregiver clears alarm.'
           : (_cleanDetectionMessage(live?.lastMessage) ?? 'No live data yet.');
       final movement = controller.displayFallProbability * 100;
       children.addAll([
@@ -998,7 +992,7 @@ class CaregiverDashboard extends StatelessWidget {
         final severity = isLatched ? 'fall_detected' : (live?.severity ?? 'low');
         final risk = ((live?.score ?? 0) * 100).round();
         final statusText = isLatched
-            ? 'Fall detected. Alarm state is latched until caregiver clears alarm.'
+            ? '${live?.predictedActivityClass ?? 'Fall'} detected. Alarm state is latched until caregiver clears alarm.'
             :
             _cleanDetectionMessage(live?.lastMessage) ??
             'No live data yet. Patient can sign in with generated credentials.';
