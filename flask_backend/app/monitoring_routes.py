@@ -42,7 +42,7 @@ EMERGENCY_DEADLINE_SEC = int(os.environ.get("FALL_EMERGENCY_DEADLINE_SEC", "90")
 DETECTOR_CFG = {
     "medium_risk_score": 0.35,
     "high_risk_score": 0.58,
-    "fall_score": 0.80,
+    "fall_score": 0.92,
 }
 DEBUG_SENSOR_LOGS = os.environ.get("EMS_DEBUG_SENSOR_LOGS", "1").strip().lower() in {
     "1",
@@ -427,6 +427,14 @@ class AdminPatientCreateBody(BaseModel):
     caregiver_id: str | None = None
 
 
+class PatientSignupBody(BaseModel):
+    full_name: str
+    username: str
+    password: str
+    age: int | None = None
+    email: str | None = None
+
+
 def _delete_patient_cascade(c: Any, patient_id: str) -> bool:
     """Remove patient row and dependents; delete linked elder login if present. Returns False if patient missing."""
     c.execute("SELECT elder_user_id FROM patients WHERE id = ?", (patient_id,))
@@ -643,6 +651,47 @@ def admin_login(body: AdminLoginBody):
         return {"access_token": token, "token_type": "bearer", "role": "admin", "email": em}
 
 
+@router.post("/api/v1/auth/patient/signup")
+def patient_signup(body: PatientSignupBody):
+    """Independent patient self-registration. No caregiver required."""
+    init_schema()
+    un = body.username.strip()
+    if not un:
+        raise HTTPException(status_code=422, detail="Username is required.")
+    if len(body.password) < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters.")
+    pid = uuid.uuid4().hex
+    eid = uuid.uuid4().hex
+    email = (body.email or "").strip() or f"{un}@patients.local"
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM users WHERE username = ?", (un,))
+        if c.fetchone():
+            raise HTTPException(status_code=409, detail="Username already taken.")
+        c.execute("SELECT id FROM users WHERE email = ?", (email,))
+        if c.fetchone():
+            raise HTTPException(status_code=409, detail="Email already registered.")
+        c.execute(
+            """INSERT INTO users (id, email, username, password_hash, role, full_name, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (eid, email, un, hash_password(body.password), "elder", body.full_name.strip(), iso_now()),
+        )
+        c.execute(
+            """INSERT INTO patients (id, full_name, age, caregiver_id, elder_user_id)
+               VALUES (?,?,?,NULL,?)""",
+            (pid, body.full_name.strip(), body.age, eid),
+        )
+    token = create_token(user_id=eid, role="elder", email=email)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "role": "elder",
+        "user_id": eid,
+        "patient_id": pid,
+        "display_name": body.full_name.strip(),
+    }
+
+
 @router.post("/api/v1/auth/elder/login")
 def elder_login(body: ElderLoginBody):
     init_schema()
@@ -659,10 +708,7 @@ def elder_login(body: ElderLoginBody):
         if not prow:
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "This elder account is not linked to a patient record. "
-                    "Ask your caregiver to complete enrollment or contact support."
-                ),
+                detail="No patient record linked to this account. Please sign up again.",
             )
         patient_id = str(prow["id"])
         token = create_token(user_id=row["id"], role="elder", email=row["email"] or un)
@@ -1642,6 +1688,20 @@ async def caregiver_alerts_ws(websocket: WebSocket, token: str = Query(..., min_
         await hub.unregister(cid, websocket)
 
 
+def _apply_deadband(arr: np.ndarray, threshold: float) -> np.ndarray:
+    if arr is None or arr.size == 0:
+        return arr
+    out = arr.copy()
+    for col in range(out.shape[1]):
+        prev = out[0, col]
+        for i in range(1, out.shape[0]):
+            if abs(out[i, col] - prev) < threshold:
+                out[i, col] = prev
+            else:
+                prev = out[i, col]
+    return out
+
+
 @router.post("/api/v1/inference/motion", response_model=MotionInferenceResponse)
 def inference_motion(body: MotionInferenceRequest):
     art = _get_art()
@@ -1652,6 +1712,14 @@ def inference_motion(body: MotionInferenceRequest):
     if body.acc_window is not None:
         acc = np.asarray(body.acc_window, dtype=np.float64)
         gyro = np.asarray(body.gyro_window, dtype=np.float64) if body.gyro_window is not None else None
+        
+        # Apply deadband to flatten micro-tremors (mimics phone resting in pocket)
+        # Increased to 0.4 to aggressively filter out hand tremors that trick the
+        # model into predicting "Walking"
+        acc = _apply_deadband(acc, 0.4)
+        if gyro is not None:
+            gyro = _apply_deadband(gyro, 0.4)
+
         ori = np.asarray(body.ori_window, dtype=np.float64) if body.ori_window is not None else None
         enhanced_in = build_enhanced_features_numpy(acc, gyro, ori).tolist()
         logger.info(
@@ -1660,6 +1728,8 @@ def inference_motion(body: MotionInferenceRequest):
         )
     else:
         enhanced_in = list(body.enhanced_features)  # type: ignore[arg-type]
+        acc = None
+        gyro = None
 
     try:
         raw = run_inference(
@@ -1667,9 +1737,10 @@ def inference_motion(body: MotionInferenceRequest):
             enhanced_in,
             body.fall_type_features,
             predict_fall_type=body.predict_fall_type,
-            acc_window=body.acc_window,
-            gyro_window=body.gyro_window,
+            acc_window=acc.tolist() if acc is not None else body.acc_window,
+            gyro_window=gyro.tolist() if gyro is not None else body.gyro_window,
             ori_window=body.ori_window,
+
         )
         return MotionInferenceResponse(**raw)
     except ValueError as e:

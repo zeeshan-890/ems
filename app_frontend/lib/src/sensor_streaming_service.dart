@@ -42,6 +42,29 @@ class SensorStreamingService {
   final int windowSize;
   final int stepSize;
 
+  // ── Phase 1a: Gyroscope EMA low-pass filter ──────────────────────────────
+  // α = 0.30 keeps real rotation, attenuates high-freq jitter that makes
+  // the model think a standing person is walking / running.
+  static const double _gyroEmaAlpha = 0.30;
+
+  // ── Phase 1b: Accelerometer smoothing ───────────────────────────────────
+  // We apply a simple EMA (α = 0.25) to smooth high-frequency vibration.
+  // IMPORTANT: We DO NOT remove gravity! The XGBoost model was trained on
+  // data that includes gravity, which is crucial for determining posture
+  // (sitting vs standing).
+  static const double _accEmaAlpha = 0.25;
+
+  // Gyro EMA state
+  double _filtGyroX = 0.0;
+  double _filtGyroY = 0.0;
+  double _filtGyroZ = 0.0;
+
+  // Smoothed total acceleration state
+  double _filtAccX = 0.0;
+  double _filtAccY = 0.0;
+  double _filtAccZ = 0.0;
+  bool _accInitialized = false;
+
   final List<SensorReadingPayload> _buffer = <SensorReadingPayload>[];
 
   StreamSubscription<AccelerometerEvent>? _accelerometerSubscription;
@@ -94,18 +117,32 @@ class SensorStreamingService {
       return;
     }
 
+    // Reset buffer and filter state for a clean session.
     _buffer.clear();
     _lastSampleTimestampMs = 0;
     _latestAzimuthDeg = null;
     _latestPitchDeg = null;
     _latestRollDeg = null;
+    _filtGyroX = 0.0;
+    _filtGyroY = 0.0;
+    _filtGyroZ = 0.0;
+    _accInitialized = false;
+    _filtAccX = 0.0;
+    _filtAccY = 0.0;
+    _filtAccZ = 0.0;
     _isRunning = true;
-
     _gyroscopeSubscription = gyroscopeEventStream().listen(
       (event) {
-        _latestGyroX = event.x;
-        _latestGyroY = event.y;
-        _latestGyroZ = event.z;
+        // Apply EMA low-pass filter to remove high-frequency rotation jitter.
+        _filtGyroX =
+            _gyroEmaAlpha * event.x + (1 - _gyroEmaAlpha) * _filtGyroX;
+        _filtGyroY =
+            _gyroEmaAlpha * event.y + (1 - _gyroEmaAlpha) * _filtGyroY;
+        _filtGyroZ =
+            _gyroEmaAlpha * event.z + (1 - _gyroEmaAlpha) * _filtGyroZ;
+        _latestGyroX = _filtGyroX;
+        _latestGyroY = _filtGyroY;
+        _latestGyroZ = _filtGyroZ;
       },
       onError: (_) {
         _latestGyroX = 0.0;
@@ -131,6 +168,7 @@ class SensorStreamingService {
       }
     } catch (_) {}
 
+    // ── Accelerometer subscription with smoothing (Phase 1b) ────────────────
     _accelerometerSubscription = accelerometerEventStream().listen(
       (event) {
         final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -141,12 +179,33 @@ class SensorStreamingService {
         }
         _lastSampleTimestampMs = nowMs;
 
+        // Seed filter on the very first sample so it converges fast.
+        if (!_accInitialized) {
+          _filtAccX = event.x;
+          _filtAccY = event.y;
+          _filtAccZ = event.z;
+          _accInitialized = true;
+        }
+
+        // Apply EMA low-pass filter to total acceleration (keeps gravity).
+        _filtAccX = _accEmaAlpha * event.x + (1 - _accEmaAlpha) * _filtAccX;
+        _filtAccY = _accEmaAlpha * event.y + (1 - _accEmaAlpha) * _filtAccY;
+        _filtAccZ = _accEmaAlpha * event.z + (1 - _accEmaAlpha) * _filtAccZ;
+
+        // Buffer stores raw acc (needed for fall-detection g-spike) plus the
+        // smoothed acc for activity classification.
         _buffer.add(
           SensorReadingPayload(
             timestampMs: nowMs,
+            // Raw total acc — sent to ingest for fall detection.
             accX: event.x,
             accY: event.y,
             accZ: event.z,
+            // Filtered total acc — used by feature extractor for activity.
+            filtAccX: _filtAccX,
+            filtAccY: _filtAccY,
+            filtAccZ: _filtAccZ,
+            // Filtered gyro (Phase 1a).
             gyroX: _latestGyroX,
             gyroY: _latestGyroY,
             gyroZ: _latestGyroZ,
