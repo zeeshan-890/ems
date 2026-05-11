@@ -225,8 +225,11 @@ class MonitoringController extends ChangeNotifier {
   /// Phase 2: majority-vote smoothed activity label for the patient home screen.
   /// Falls back to the raw inference label when the buffer hasn't converged yet.
   String? get smoothedActivityLabel {
+    // When a fall alert is active, always show "Fall Detected" regardless of
+    // what subsequent batches classify — _lastDetection updates every batch so
+    // reading it here would flip back to the ADL label after the first fall batch.
     if (_activeAlert != null || _lastDetection?.severity == 'fall_detected') {
-      return _lastDetection?.predictedActivityClass ?? 'Fall Detected';
+      return 'Fall Detected';
     }
     return _smoothedActivityLabel ?? _lastDetection?.predictedActivityClass;
   }

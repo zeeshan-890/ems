@@ -15,21 +15,25 @@ MEDIUM = {
 }
 
 # Guardrail against false alarms from tiny handset motion.
-# A "true" fall should usually show at least one clear impact/rotation cue.
-FALL_MIN_PEAK_ACC_G = 1.70
-FALL_MIN_PEAK_GYRO_DPS = 180.0
+# Both must clear for "fall_detected" — a real fall generates ground-impact acceleration
+# AND rotational velocity from the body tumbling. Slight jolts or jogging typically
+# produce one but not both simultaneously.
+FALL_MIN_PEAK_ACC_G = 2.5       # raised from 1.70 — tiny jolts produce <2.5g
+FALL_MIN_PEAK_GYRO_DPS = 150.0  # kept permissive so pocket-muffled falls aren't missed
 
 # Stationary guard: quiet stance / pocket noise (phone barely moving).
 _STATIONARY_GYRO_PEAK_DPS = 95.0
-_STATIONARY_PEAK_ACC_G = 2.05
-_STATIONARY_STILLNESS_MIN = 0.62
+_STATIONARY_PEAK_ACC_G = 2.0
+_STATIONARY_STILLNESS_MIN = 0.58  # slightly looser so micro-tremors are caught
 
-# Locomotion guard: sustained rhythmic motion (walking/running).
-# Real fall impacts have: extreme single spike (peak/mean > ratio) or very high gyro.
-_LOCOMOTION_MIN_MEAN_ACC_G = 1.10   # sustained above-gravity = actively moving
-_LOCOMOTION_MAX_PEAK_ACC_G = 4.5    # hard impacts usually exceed this
+# Locomotion guard: sustained rhythmic motion (walking / jogging / running).
+# KEY: do NOT gate on peak_acc — vigorous jogging footstrike can exceed 4–5 g,
+# which previously caused the guard to silently fail and let jogging trigger fall alerts.
+# The impulse ratio (peak/mean) is the real discriminator: falls produce a single
+# brief spike (ratio > 4×), whereas jogging keeps ratio ≈ 1.5–2.5× even at high peaks.
+_LOCOMOTION_MIN_MEAN_ACC_G = 1.10   # sustained above-gravity = person is actively moving
 _LOCOMOTION_MAX_GYRO_DPS = 260.0    # hard fall tumble usually exceeds this
-_LOCOMOTION_MAX_IMPULSE_RATIO = 3.5  # peak/mean; falls tend > 4x, running ≈ 1.5–3x
+_LOCOMOTION_MAX_IMPULSE_RATIO = 3.0  # tightened from 3.5; jogging ≈ 1.5–2.5, falls ≈ 4+
 
 
 def _effective_fall_probability(p: float, sig: dict[str, float]) -> tuple[float, bool]:
@@ -47,19 +51,22 @@ def _effective_fall_probability(p: float, sig: dict[str, float]) -> tuple[float,
         dampened = min(p, 0.14 + p * 0.22)
         return dampened, True
 
-    # --- locomotion guard (sustained walking / running rhythm) ---
+    # --- locomotion guard (sustained walking / jogging / running rhythm) ---
     if p > 0.50:
         mean_acc = sig.get("mean_acc_g", 0.0)
+        # Use peak_acc / max(mean_acc, 0.5) so near-zero mean doesn't inflate ratio.
         impulse_ratio = sig["peak_acc_g"] / max(mean_acc, 0.5)
         looks_like_locomotion = (
-            mean_acc >= _LOCOMOTION_MIN_MEAN_ACC_G          # person is moving
-            and sig["peak_acc_g"] < _LOCOMOTION_MAX_PEAK_ACC_G  # no extreme impact
-            and sig["peak_gyro_dps"] < _LOCOMOTION_MAX_GYRO_DPS  # no violent tumble
-            and impulse_ratio < _LOCOMOTION_MAX_IMPULSE_RATIO    # rhythmic, not spike
+            mean_acc >= _LOCOMOTION_MIN_MEAN_ACC_G           # person is actively moving
+            and sig["peak_gyro_dps"] < _LOCOMOTION_MAX_GYRO_DPS   # no violent tumble
+            and impulse_ratio < _LOCOMOTION_MAX_IMPULSE_RATIO     # rhythmic, not spike
+            # NOTE: peak_acc is intentionally NOT checked here — vigorous jogging
+            # footstrike can exceed 4–5 g, which previously bypassed this guard.
         )
         if looks_like_locomotion:
-            # Dampen but keep elevated risk visible — caps jogging at ~0.60 fall prob.
-            dampened = min(p, 0.40 + p * 0.22)
+            # Dampen aggressively: locomotion can never fire a fall alert.
+            # max possible dampened value = min(1.0, 0.32 + 1.0*0.18) = 0.50 < 0.80 alert thr.
+            dampened = min(p, 0.32 + p * 0.18)
             return dampened, True
 
     return p, False
@@ -126,12 +133,13 @@ def build_detection_payload(
     p_eff, stationary_guard = _effective_fall_probability(fall_probability, sig)
     severity = _severity_from_fall_prob(p_eff, threshold)
     if severity == "fall_detected":
+        # Require BOTH high acceleration (ground impact) AND rotation (body tumbling).
+        # A real fall produces both; a table drop or jogging spike produces only one.
         has_impact_evidence = (
             sig["peak_acc_g"] >= FALL_MIN_PEAK_ACC_G
-            or sig["peak_gyro_dps"] >= FALL_MIN_PEAK_GYRO_DPS
+            and sig["peak_gyro_dps"] >= FALL_MIN_PEAK_GYRO_DPS
         )
         if not has_impact_evidence:
-            # Keep elevated risk visible, but suppress hard fall alert.
             severity = "high_risk"
     score = max(p_eff, sig["peak_acc_g"] / 5.0 * 0.3 + p_eff * 0.7)
     reasons = []
