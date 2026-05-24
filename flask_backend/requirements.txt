@@ -1,4 +1,4 @@
-# API service only (subset of ../requirements.txt)
+# API service only (subset of ../requirements.txt
 fastapi>=0.110,<1
 uvicorn[standard]>=0.27,<1
 pydantic>=2.5,<3
