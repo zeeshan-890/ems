@@ -79,6 +79,59 @@ Backend deploy is driven by [`.github/workflows/deploy-backend.yml`](.github/wor
 - `CAPROVER_BACKEND_APP` — app name exactly as in CapRover
 - `CAPROVER_BACKEND_APP_TOKEN` — **Deployment → App token** for that app (not your GitHub token)
 
+### CapRover app setup
+
+1. Create a new app in CapRover, for example `ems-backend`.
+2. In **HTTP Settings**, set **Container HTTP Port** to `8000`.
+3. Enable HTTPS after the app has deployed successfully.
+4. In **App Configs > Environmental Variables**, set production values:
+
+```bash
+JWT_SECRET=replace-with-a-long-random-secret
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=replace-with-a-strong-password
+EMS_DEBUG_SENSOR_LOGS=0
+OMP_NUM_THREADS=1
+OPENBLAS_NUM_THREADS=1
+```
+
+For production persistence, prefer MongoDB:
+
+```bash
+EMS_DB_BACKEND=mongo
+MONGO_URI=mongodb+srv://USER:PASSWORD@HOST/ems?retryWrites=true&w=majority
+MONGO_DB_NAME=ems
+```
+
+If you use SQLite instead, add persistent storage in CapRover and mount it to `/app/data`, then set:
+
+```bash
+EMS_DB_PATH=/app/data/elder_monitor.db
+```
+
+Without MongoDB or a persistent `/app/data` mount, caregiver and patient records will be lost on container redeploy.
+
+### Deploy paths
+
+Automatic deploy:
+
+1. Push to `main` or `master`.
+2. GitHub Actions creates `deploy.tar` with `captain-definition`, `flask_backend/`, and required inference scripts.
+3. The `caprover/deploy-from-github` action deploys the archive to the CapRover app.
+
+Manual deploy:
+
+1. Copy [`flask_backend/captain-definition`](flask_backend/captain-definition) to the repository root as `captain-definition`.
+2. Upload/deploy the repo or a tar archive through CapRover.
+
+After deploy, verify:
+
+```bash
+curl https://ems-backend.your-domain.com/api/v1/health
+```
+
+The response should include `"status": "ok"`. If `"inference_ready"` is `false`, check CapRover logs for model artifact loading errors.
+
 ## Documentation
 
 - [System architecture](docs/ARCHITECTURE.md) — sensor → API → models, roles, feedback stub
