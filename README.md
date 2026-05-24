@@ -79,6 +79,11 @@ Backend deploy is driven by [`.github/workflows/deploy-backend.yml`](.github/wor
 - `CAPROVER_BACKEND_APP` — app name exactly as in CapRover
 - `CAPROVER_BACKEND_APP_TOKEN` — **Deployment → App token** for that app (not your GitHub token)
 
+Frontend deploy is driven by [`.github/workflows/deploy-frontend.yml`](.github/workflows/deploy-frontend.yml) using [`web_frontend/captain-definition`](web_frontend/captain-definition). Configure these extra GitHub Actions secrets:
+
+- `CAPROVER_FRONTEND_APP` — frontend app name exactly as in CapRover
+- `CAPROVER_FRONTEND_APP_TOKEN` — **Deployment → App token** for the frontend app
+
 ### CapRover app setup
 
 1. Create a new app in CapRover, for example `ems-backend`.
@@ -131,6 +136,8 @@ curl https://ems-backend.your-domain.com/api/v1/health
 ```
 
 The response should include `"status": "ok"`. If `"inference_ready"` is `false`, check CapRover logs for model artifact loading errors.
+
+For the React frontend, create a second CapRover app, for example `ems-frontend`. It serves nginx on port `80`, so CapRover's default container HTTP port is fine. Push changes under `web_frontend/` to trigger the frontend workflow.
 
 ## Documentation
 
