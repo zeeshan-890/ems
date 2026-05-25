@@ -12,6 +12,7 @@
 ///
 /// System design details: repository `docs/ARCHITECTURE.md`.
 /// Inference contract: `models/inference_manifest.json` + `scripts/inference/motion_pipeline.py`.
+library;
 
 enum AppRole {
   caretaker,

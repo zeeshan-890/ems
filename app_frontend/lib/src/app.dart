@@ -2234,11 +2234,9 @@ class CaregiverPatientsLocationMap extends StatelessWidget {
 
 class _LocationMapCard extends StatelessWidget {
   const _LocationMapCard({
-    super.key,
     required this.current,
     required this.home,
     required this.compact,
-    this.headingDegrees,
   });
 
   final LatLng current;
