@@ -12,7 +12,6 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'api_client.dart';
 import 'api_config.dart';
 import 'models.dart';
-import 'motion_inference_helper.dart';
 import 'sensor_streaming_service.dart';
 
 class MonitoringController extends ChangeNotifier {
@@ -33,10 +32,13 @@ class MonitoringController extends ChangeNotifier {
 
   /// Former shipped default; if still stored, migrate so installs pick the configured host.
   static const String _legacyDefaultBackendUrl = 'http://10.0.2.2:8000';
+  static const String _legacyHostedBackendUrl =
+      'https://detection-backend.app.zeeshan-abbas.tech';
 
   static bool _shouldMigrateStoredBackendUrl(String url) {
-    final t = url.trim();
+    final t = url.trim().replaceFirst(RegExp(r'/+$'), '');
     if (t == _legacyDefaultBackendUrl) return true;
+    if (t == _legacyHostedBackendUrl) return true;
     final lower = t.toLowerCase();
     return lower.startsWith('http://127.0.0.1') ||
         lower.startsWith('http://localhost');

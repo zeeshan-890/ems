@@ -9,13 +9,11 @@ npm install
 npm run dev
 ```
 
-The app defaults to `http://localhost:8000` for the backend. You can set a build-time default with:
+The app defaults to `https://detectionbackend.zeeshan-abbas.tech` for the backend. You can override the build-time backend with:
 
 ```bash
 VITE_BACKEND_URL=https://ems-backend.your-domain.com npm run build
 ```
-
-The UI also lets you enter and save the backend URL in the browser.
 
 ## CapRover
 

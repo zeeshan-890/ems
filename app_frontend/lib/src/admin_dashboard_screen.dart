@@ -243,7 +243,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String?>(
-                    value: caregiverPick,
+                    initialValue: caregiverPick,
                     decoration: const InputDecoration(labelText: 'Assign to caretaker (optional)'),
                     items: [
                       const DropdownMenuItem<String?>(value: null, child: Text('— None —')),

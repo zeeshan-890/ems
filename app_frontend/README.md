@@ -49,7 +49,7 @@ Main endpoints called by the app:
 ## Prerequisites
 
 - Flutter SDK installed
-- backend running at a reachable URL (default backend port: 8000)
+- backend running at a reachable URL. The app default is `https://detectionbackend.zeeshan-abbas.tech`.
 
 Check Flutter toolchain:
 
@@ -72,6 +72,7 @@ flutter test
 
 ## Backend URL setup by target device
 
+- Deployed backend: `https://detectionbackend.zeeshan-abbas.tech`
 - Android emulator: `http://10.0.2.2:8000`
 - iOS simulator: `http://127.0.0.1:8000`
 - Physical phone: `http://<your-computer-lan-ip>:8000`

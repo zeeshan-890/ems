@@ -50,6 +50,12 @@ DEBUG_SENSOR_LOGS = os.environ.get("EMS_DEBUG_SENSOR_LOGS", "1").strip().lower()
     "yes",
     "on",
 }
+LOG_SENSOR_TO_CONSOLE = os.environ.get("EMS_LOG_SENSOR_CONSOLE", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # MobiAct fall-type codes (when optional fall-type artifacts are configured).
 _FALL_CODE_TO_NAME: dict[str, str] = {
@@ -147,10 +153,143 @@ _SENSOR_DIAG_LOG = os.path.join(
     os.environ.get("EMS_DIAG_DIR", os.path.join(os.path.dirname(__file__), "..", "logs")),
     "sensor_diag.jsonl",
 )
+_SENSOR_FULL_LOG = os.path.join(
+    os.environ.get("EMS_DIAG_DIR", os.path.join(os.path.dirname(__file__), "..", "logs")),
+    "sensor_full_raw_data.jsonl",
+)
 os.makedirs(os.path.dirname(_SENSOR_DIAG_LOG), exist_ok=True)
 
 _SEP = "=" * 70
 _DIAG_COUNTER = 0   # batch sequence number (module-level, not thread-safe but fine for diag)
+
+
+def _print_sensor_batch_console(batch_record: dict[str, Any], sample_records: list[dict[str, Any]]) -> None:
+    """Print formatted sensor batch to console/stdout."""
+    batch_id = batch_record.get("batch_id", "unknown")[:8]
+    patient_id = batch_record.get("patient_id", "?")
+    session_id = batch_record.get("session_id", "?")[:8]
+    n_samples = batch_record.get("n_samples", 0)
+    ts = batch_record.get("server_timestamp", "")
+
+    # Calculate summary statistics
+    if sample_records:
+        acc_x = [s.get("acc_x", 0) for s in sample_records]
+        acc_y = [s.get("acc_y", 0) for s in sample_records]
+        acc_z = [s.get("acc_z", 0) for s in sample_records]
+        gyro_x = [s.get("gyro_x", 0) for s in sample_records]
+        gyro_y = [s.get("gyro_y", 0) for s in sample_records]
+        gyro_z = [s.get("gyro_z", 0) for s in sample_records]
+
+        acc_mag = [float(np.sqrt(x**2 + y**2 + z**2)) for x, y, z in zip(acc_x, acc_y, acc_z)]
+        gyro_mag = [float(np.sqrt(x**2 + y**2 + z**2)) for x, y, z in zip(gyro_x, gyro_y, gyro_z)]
+
+        # Format console output
+        banner = (
+            f"\n{'─' * 85}\n"
+            f"🔹 SENSOR BATCH  │  batch={batch_id}  │  patient={patient_id}\n"
+            f"   session={session_id}  │  samples={n_samples}  │  {ts}\n"
+            f"{'─' * 85}\n"
+            f"  ACCELEROMETER (m/s²)  [mean ± std / min..max]\n"
+            f"    X: {np.mean(acc_x):+7.3f}±{np.std(acc_x):.3f}  /  {min(acc_x):+7.3f} .. {max(acc_x):+7.3f}\n"
+            f"    Y: {np.mean(acc_y):+7.3f}±{np.std(acc_y):.3f}  /  {min(acc_y):+7.3f} .. {max(acc_y):+7.3f}\n"
+            f"    Z: {np.mean(acc_z):+7.3f}±{np.std(acc_z):.3f}  /  {min(acc_z):+7.3f} .. {max(acc_z):+7.3f}\n"
+            f"  |ACC|: {np.mean(acc_mag):+7.3f}±{np.std(acc_mag):.3f}  /  {min(acc_mag):+7.3f} .. {max(acc_mag):+7.3f}\n"
+            f"\n  GYROSCOPE (rad/s)  [mean ± std / min..max]\n"
+            f"    X: {np.mean(gyro_x):+7.5f}±{np.std(gyro_x):.5f}  /  {min(gyro_x):+7.5f} .. {max(gyro_x):+7.5f}\n"
+            f"    Y: {np.mean(gyro_y):+7.5f}±{np.std(gyro_y):.5f}  /  {min(gyro_y):+7.5f} .. {max(gyro_y):+7.5f}\n"
+            f"    Z: {np.mean(gyro_z):+7.5f}±{np.std(gyro_z):.5f}  /  {min(gyro_z):+7.5f} .. {max(gyro_z):+7.5f}\n"
+            f"  |GYR|: {np.mean(gyro_mag):+7.5f}±{np.std(gyro_mag):.5f}  /  {min(gyro_mag):+7.5f} .. {max(gyro_mag):+7.5f}\n"
+        )
+
+        # Add orientation if present
+        ori_samples = [s for s in sample_records if "azimuth" in s]
+        if ori_samples:
+            az = [s.get("azimuth", 0) for s in ori_samples]
+            pit = [s.get("pitch", 0) for s in ori_samples]
+            rol = [s.get("roll", 0) for s in ori_samples]
+            banner += (
+                f"\n  ORIENTATION (degrees)  [{len(ori_samples)}/{n_samples} samples]\n"
+                f"    Azimuth: {np.mean(az):7.2f}±{np.std(az):.2f}  /  {min(az):7.2f} .. {max(az):7.2f}\n"
+                f"    Pitch:   {np.mean(pit):7.2f}±{np.std(pit):.2f}  /  {min(pit):7.2f} .. {max(pit):7.2f}\n"
+                f"    Roll:    {np.mean(rol):7.2f}±{np.std(rol):.2f}  /  {min(rol):7.2f} .. {max(rol):7.2f}\n"
+            )
+
+        # Show first 2 samples as examples
+        banner += (
+            f"\n  SAMPLE DATA (first 2 of {n_samples})\n"
+        )
+        for i, sample in enumerate(sample_records[:2]):
+            banner += (
+                f"    Sample {i}: "
+                f"acc=({sample.get('acc_x',0):+.3f}, {sample.get('acc_y',0):+.3f}, {sample.get('acc_z',0):+.3f})  "
+                f"gyro=({sample.get('gyro_x',0):+.4f}, {sample.get('gyro_y',0):+.4f}, {sample.get('gyro_z',0):+.4f})\n"
+            )
+
+        banner += f"{'─' * 85}\n"
+        print(banner, flush=True)
+
+
+def _log_full_sensor_data(
+    samples: list[dict[str, Any]],
+    patient_id: str,
+    session_id: str,
+    device_id: str,
+    batch_metadata: dict[str, Any] | None = None,
+) -> None:
+    """
+    Log complete raw sensor data to sensor_full_raw_data.jsonl.
+    Includes all accelerometer, gyroscope, and orientation values for each sample.
+    Also logs to console if LOG_SENSOR_TO_CONSOLE is enabled.
+    """
+    if not samples:
+        return
+
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+    # Prepare individual sample records
+    sample_records = []
+    for idx, sample in enumerate(samples):
+        sample_record = {
+            "sample_index": idx,
+            "timestamp_ms": int(sample.get("timestamp_ms", 0)),
+            "acc_x": float(sample.get("acc_x", 0.0)),
+            "acc_y": float(sample.get("acc_y", 0.0)),
+            "acc_z": float(sample.get("acc_z", 0.0)),
+            "gyro_x": float(sample.get("gyro_x", 0.0)),
+            "gyro_y": float(sample.get("gyro_y", 0.0)),
+            "gyro_z": float(sample.get("gyro_z", 0.0)),
+        }
+        # Add orientation if present
+        if sample.get("azimuth") is not None:
+            sample_record["azimuth"] = float(sample["azimuth"])
+        if sample.get("pitch") is not None:
+            sample_record["pitch"] = float(sample["pitch"])
+        if sample.get("roll") is not None:
+            sample_record["roll"] = float(sample["roll"])
+        sample_records.append(sample_record)
+
+    # Create batch record with all metadata and samples
+    batch_record = {
+        "batch_id": uuid.uuid4().hex,
+        "server_timestamp": ts,
+        "patient_id": patient_id,
+        "session_id": session_id,
+        "device_id": device_id,
+        "n_samples": len(samples),
+        "batch_metadata": batch_metadata or {},
+        "samples": sample_records,
+    }
+
+    # Log to file
+    try:
+        with open(_SENSOR_FULL_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(batch_record) + "\n")
+    except OSError as e:
+        logger.error(f"Failed to write full sensor log: {e}")
+
+    # Log to console if enabled
+    if LOG_SENSOR_TO_CONSOLE:
+        _print_sensor_batch_console(batch_record, sample_records)
 
 
 def _diag_sensor_batch(samples: list[dict[str, Any]], patient_id: str) -> None:
@@ -999,6 +1138,17 @@ def ingest_live(body: IngestLiveBody, background_tasks: BackgroundTasks):
 
     samples_dict = [s.model_dump(exclude_none=True) for s in body.samples]
     _diag_sensor_batch(samples_dict, body.patient_id)
+
+    # Log full raw sensor data
+    batch_metadata = {
+        "source": body.source,
+        "sampling_rate_hz": body.sampling_rate_hz,
+        "acceleration_unit": body.acceleration_unit,
+        "gyroscope_unit": body.gyroscope_unit,
+        "battery_level": body.battery_level,
+    }
+    _log_full_sensor_data(samples_dict, body.patient_id, body.session_id, body.device_id, batch_metadata)
+
     feat_vec, acc300, gyro300, ori300 = samples_to_feature_vector(samples_dict)
     acc_w, gyro_w, ori_w = acc_gyro_ori_to_window_lists(acc300, gyro300, ori300)
     if DEBUG_SENSOR_LOGS:
@@ -1019,6 +1169,13 @@ def ingest_live(body: IngestLiveBody, background_tasks: BackgroundTasks):
             body.session_id,
             len(feat_vec),
             _preview_vector(feat_vec.tolist()),
+        )
+        logger.warning(
+            "[ingest/live] full_raw_data_logged patient_id=%s session_id=%s samples=%d log_file=%s",
+            body.patient_id,
+            body.session_id,
+            len(samples_dict),
+            _SENSOR_FULL_LOG,
         )
 
     inferred_activity: str | None = None
